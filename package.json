@@ -1,0 +1,25 @@
+{
+  "name": "setu",
+  "version": "0.1.0",
+  "description": "Setu — agent commerce gateway (MCP server)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/samprith02/SETU.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/samprith02/SETU/issues"
+  },
+  "homepage": "https://github.com/samprith02/SETU#readme",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  }
+}
