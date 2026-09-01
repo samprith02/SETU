@@ -1,0 +1,27 @@
+# Environment variables
+.env
+*.local
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+venv/
+*.pyc
+
+# OS / editor junk
+.DS_Store
+.vscode/
+
+# Planning files
+razorpay Track01.png
+razorpay-buildathon-roadmap.md
+
+# Claude Code local overrides (settings.json stays tracked)
+.claude/settings.local.json
+
+# Demo / screen recordings
+*.mp4
+*.mov
+*.mkv
