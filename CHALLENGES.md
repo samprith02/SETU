@@ -82,3 +82,11 @@ One sharp edge found while testing this: `--env-file` **hard-crashes** if the
 file is absent (`node.exe: .env: not found`), which would break anyone cloning
 the repo without a `.env`. `--env-file-if-exists` is the forgiving variant if
 that becomes a problem for reproducing the demo.
+
+---
+
+## Scope decisions (deliberate omissions, not oversights)
+
+- **Stock is seeded but never decremented on purchase.** Inventory management is
+  orthogonal to the trust primitive this project is demonstrating, so `stock` is
+  presented to the agent as catalog metadata only. A purchase does not mutate it.
