@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Setu — Test Checkout</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+      button { font: inherit; padding: 0.6rem 1.2rem; cursor: pointer; }
+      pre { background: #f4f4f5; padding: 0.75rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; }
+      .ok { color: #15803d; } .bad { color: #b91c1c; }
+    </style>
+  </head>
+  <body>
+    <h1>Setu — test checkout</h1>
+    <p>Harness for the Razorpay test-mode payment loop. Pass a product with
+      <code>?productId=…</code> (default: <code>cbl-usbc-1m</code>).</p>
+
+    <p><strong id="summary">Loading…</strong></p>
+    <button id="pay" disabled>Pay with Razorpay</button>
+    <h2>Log</h2>
+    <pre id="log"></pre>
+
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const productId = params.get("productId") || "cbl-usbc-1m";
+      const logEl = document.getElementById("log");
+      const payBtn = document.getElementById("pay");
+      let checkout = null;
+
+      const log = (msg, cls) => {
+        const line = document.createElement("div");
+        if (cls) line.className = cls;
+        line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+        logEl.appendChild(line);
+      };
+      const rupees = (paise) => "₹" + (paise / 100).toFixed(2);
+
+      // Step 1: ask our server to create a Razorpay order. The amount is decided
+      // server-side from the catalog — the browser never names a price.
+      async function init() {
+        log(`POST /checkout { productId: "${productId}" }`);
+        const res = await fetch("/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productId }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          document.getElementById("summary").textContent = "Failed to create order.";
+          log(`error: ${JSON.stringify(data)}`, "bad");
+          return;
+        }
+        log(`order created: ${data.order_id} for ${rupees(data.amount)}`, "ok");
+        document.getElementById("summary").textContent =
+          `${data.product.name} — ${rupees(data.amount)}`;
+        checkout = data;
+        payBtn.disabled = false;
+      }
+
+      payBtn.addEventListener("click", () => {
+        const rzp = new Razorpay({
+          key: checkout.key_id,
+          order_id: checkout.order_id,
+          amount: checkout.amount,
+          currency: checkout.currency,
+          name: "Setu Campus Tech Essentials",
+          description: checkout.product.name,
+          // Step 3: Razorpay hands back a payment id and a signature.
+          handler: async (response) => {
+            log(`payment returned: ${response.razorpay_payment_id}`);
+            log("POST /payment/verify — recomputing signature server-side…");
+            const verifyRes = await fetch("/payment/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(response),
+            });
+            const result = await verifyRes.json();
+            log(JSON.stringify(result), result.verified ? "ok" : "bad");
+            log(
+              result.verified
+                ? "VERIFIED — signature matched, payment is genuine."
+                : "REJECTED — signature did not match.",
+              result.verified ? "ok" : "bad",
+            );
+          },
+          modal: { ondismiss: () => log("checkout dismissed by user") },
+          theme: { color: "#0f766e" },
+        });
+        rzp.on("payment.failed", (e) =>
+          log(`payment failed: ${e.error.description}`, "bad"),
+        );
+        // Step 2: open Razorpay's hosted checkout. Card details are entered
+        // inside Razorpay's iframe and never touch this page or our server.
+        rzp.open();
+      });
+
+      init();
+    </script>
+  </body>
+</html>

@@ -85,6 +85,23 @@ that becomes a problem for reproducing the demo.
 
 ---
 
+## 2. Signature verification proves authenticity, not capture
+
+**Day 1, 2026-09-01**
+
+Recomputing the HMAC on a checkout callback proves the message genuinely came
+from Razorpay and was not altered in transit. It proves nothing about whether
+the payment actually succeeded: a correctly signed callback for a pending,
+failed, or authorised-but-uncaptured payment verifies exactly as cleanly as one
+for a captured payment. Authenticity and outcome are separate questions, and
+only the first is answered by the signature.
+
+Closed on Day 2 inside `initiate_purchase`, which fetches the payment with
+`razorpay.payments.fetch(paymentId)` and treats the purchase as real only when
+`status === "captured"`.
+
+---
+
 ## Scope decisions (deliberate omissions, not oversights)
 
 - **Stock is seeded but never decremented on purchase.** Inventory management is
