@@ -98,16 +98,26 @@ const DEFAULT_AUDIT_LIMIT = 25;
  * the cap. That matters because the cap is not the only rule: an expired
  * mandate or an exhausted budget refuses everything, and in those cases this
  * correctly returns nothing rather than suggesting a substitute that would be
- * refused on the next call. Cheapest first, for the same reason searchCatalog
- * sorts that way — an agent under a spend cap wants what fits.
+ * refused on the next call.
+ *
+ * ORDER: the blocked product's own category first, cheapest within it, then
+ * everything else cheapest-first. Pure cheapest-first was the original rule and
+ * it read badly — asked for a ₹749 mouse, the two cheapest permitted products
+ * in the whole catalog are a notebook and a pen pack, so the refusal answered
+ * "you can't have a mouse" with "have some stationery". Same-category-first
+ * answers the question that was actually asked, and degrades on its own: when
+ * the refusal was ABOUT the category, nothing shares it, every candidate sorts
+ * equal on that key and the ordering falls back to cheapest overall.
  */
-function suggestAlternatives(mandate, blockedProductId, limit = 2) {
+function suggestAlternatives(mandate, blockedProduct, limit = 2) {
+  const sameCategory = (product) => (product.category === blockedProduct.category ? 0 : 1);
+
   return mandate.category_allowlist
     .flatMap((category) => searchCatalog({ category, maxPrice: mandate.per_txn_cap }).products)
-    .sort((a, b) => a.price - b.price)
+    .sort((a, b) => sameCategory(a) - sameCategory(b) || a.price - b.price)
     .filter(
       (candidate) =>
-        candidate.id !== blockedProductId &&
+        candidate.id !== blockedProduct.id &&
         check(mandate, candidate.price, candidate.category).approved,
     )
     .slice(0, limit);
@@ -133,7 +143,10 @@ const alternativesDetail = (alternatives) =>
  */
 const alternativesAdvice = (alternatives) =>
   alternatives.length > 0
-    ? " Permitted alternatives, cheapest first: " +
+    ? // "Closest match first", not "cheapest first" — the list is no longer in
+      // price order, and describing it as if it were would be a lie the agent
+      // acts on.
+      " Permitted alternatives, closest match first: " +
       alternatives.map((a) => `${a.name} (${formatPaise(a.price)}, id ${a.id})`).join("; ") +
       "."
     : " No product in this catalog is permitted under the current mandate, so there is no substitute.";
@@ -248,7 +261,8 @@ server.registerTool(
       "Ask whether buying a product would be permitted under the active spend mandate, WITHOUT " +
       "buying it. Returns the verdict and, when refused, the specific rule that refused it, how " +
       "much budget remains, and up to two `alternatives` — real catalog products the mandate WOULD " +
-      "approve, cheapest first. Buy one of those ids instead of searching the catalog yourself. " +
+      "approve, closest match first (same category as the product you asked about where one " +
+      "qualifies, then cheapest). Buy one of those ids instead of searching the catalog yourself. " +
       "The amount and category are read from the catalog, never supplied by the caller. " +
       "This is a preview: initiate_purchase re-runs the same check itself, so calling this first " +
       "is optional, but the check is recorded in the audit log either way.",
@@ -277,7 +291,7 @@ server.registerTool(
     // commits — so a refusal that named alternatives only on the committing call
     // would never reach the agent that most deserves it, and would leave it
     // searching the catalog by hand for something the gate could have named.
-    const alternatives = verdict.approved ? [] : suggestAlternatives(mandate, product.id);
+    const alternatives = verdict.approved ? [] : suggestAlternatives(mandate, product);
 
     audit.record({
       status: audit.STATUS.MANDATE_CHECKED,
@@ -339,8 +353,9 @@ server.registerTool(
     description:
       "Attempt to buy a product. The purchase is checked against the active spend mandate FIRST — " +
       "if the mandate refuses, no payment order is created and nothing is charged, and the refusal " +
-      "names up to two `alternatives` the mandate WOULD approve. To recover from a refusal, call " +
-      "this tool again with one of those ids — there is no separate retry tool. " +
+      "names up to two `alternatives` the mandate WOULD approve, closest match first (same category " +
+      "as the product you asked for where one qualifies, then cheapest). To recover from a refusal, " +
+      "call this tool again with one of those ids — there is no separate retry tool. " +
       "If the mandate approves, a Razorpay order is created and a checkout URL is returned. " +
       "This does NOT complete the payment: a human must open that URL and pay. The tool returns " +
       "status 'awaiting_payment', never 'paid'. Call get_audit_log afterwards to see whether the " +
@@ -378,7 +393,7 @@ server.registerTool(
     };
 
     if (!verdict.approved) {
-      const alternatives = suggestAlternatives(mandate, product.id);
+      const alternatives = suggestAlternatives(mandate, product);
 
       // The substitutes go in the ledger too. "Blocked, and here is what was
       // offered instead" is the recovery story an auditor needs; without it the

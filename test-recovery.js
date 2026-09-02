@@ -32,6 +32,7 @@ const RUNS = 5;
 // per-transaction cap — it isolates the cap as the binding rule and cannot be
 // mistaken for a category quibble.
 const BLOCKED_ID = "acc-mouse-wireless";
+const BLOCKED_CATEGORY = "accessories";
 const BLOCKED_RULE = "per_txn_cap_exceeded";
 const REQUEST = "buy me a wireless mouse for the campus desk setup";
 
@@ -124,9 +125,24 @@ for (let run = 1; run <= RUNS; run++) {
       fail(`suggested ${alt.id} at ${formatPaise(alt.price)}, over the per-transaction cap`);
     }
   }
-  // Cheapest first.
+  // Closest match first: the blocked product's own category ahead of everything
+  // else, cheapest within each group. Note this is deliberately NOT price order
+  // overall — for the mouse, the ₹399 phone case outranks the ₹120 notebook
+  // because it is the substitute that answers the question that was asked.
+  const rank = (a) => [a.category === BLOCKED_CATEGORY ? 0 : 1, a.price];
   for (let i = 1; i < alternatives.length; i++) {
-    if (alternatives[i].price < alternatives[i - 1].price) fail("alternatives are not cheapest-first");
+    const [prevGroup, prevPrice] = rank(alternatives[i - 1]);
+    const [group, price] = rank(alternatives[i]);
+    if (group < prevGroup || (group === prevGroup && price < prevPrice)) {
+      fail(`alternatives are out of order: ${alternatives[i - 1].id} before ${alternatives[i].id}`);
+    }
+  }
+  // The substitute offered first must be in the same category as the refused
+  // product whenever the catalog has one the mandate allows.
+  if (alternatives.some((a) => a.category === BLOCKED_CATEGORY)) {
+    if (alternatives[0].category !== BLOCKED_CATEGORY) {
+      fail(`a ${BLOCKED_CATEGORY} substitute exists but ${alternatives[0].id} was offered first`);
+    }
   }
   console.log(
     `     offered: ${alternatives.map((a) => `${a.id} (${a.price_display})`).join(", ")}`,
