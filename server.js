@@ -78,6 +78,11 @@ function currentMandate() {
   return { ...DEMO_MANDATE, spent: audit.totalCaptured() };
 }
 
+// How many entries get_audit_log returns when the caller does not say. Small
+// enough that the response survives an MCP client's output limit — see the
+// tool itself for why that is a correctness concern and not a nicety.
+const DEFAULT_AUDIT_LIMIT = 25;
+
 // ---------------------------------------------------------------------------
 // Tool result helpers
 // ---------------------------------------------------------------------------
@@ -389,13 +394,18 @@ server.registerTool(
       "Read the audit trail: every mandate check, every blocked purchase, every order created and " +
       "every payment captured or failed, oldest first. This is the record of what was decided and " +
       "why. Use it to confirm whether a purchase you initiated was actually paid for — " +
-      "initiate_purchase only ever reports that an order was created.",
+      "initiate_purchase only ever reports that an order was created. " +
+      `Returns the ${DEFAULT_AUDIT_LIMIT} most recent entries by default; the response states how ` +
+      "many exist in total, and `limit` or `order_id` reach the rest.",
     inputSchema: {
       limit: z
         .int()
         .positive()
         .optional()
-        .describe("Return only the most recent N entries. Omit for the full trail."),
+        .describe(
+          `Return only the most recent N entries. Defaults to ${DEFAULT_AUDIT_LIMIT}. ` +
+            "Pass a larger number for more of the trail.",
+        ),
       order_id: z
         .string()
         .optional()
@@ -403,15 +413,30 @@ server.registerTool(
     },
   },
   async ({ limit, order_id }) => {
-    const entries = order_id
-      ? audit.findByOrderId(order_id)
-      : audit.list({ limit: limit ?? null });
+    // The whole matching set first, so `total` is honest, then the window.
+    //
+    // The default window is not cosmetic. Observed live: with ~100 entries the
+    // unfiltered response ran to 79,000 characters and was rejected by the
+    // client before the agent ever saw it — and "read the audit trail" is the
+    // first thing anyone asks this server to do. A trail nobody can open
+    // explains nothing. The count of what was left out is reported alongside,
+    // because silently showing a fraction is its own kind of dishonesty.
+    const all = order_id ? audit.findByOrderId(order_id) : audit.list();
+    // A single order's history is a handful of entries; never truncate that.
+    const window = limit ?? (order_id ? all.length : DEFAULT_AUDIT_LIMIT);
+    const entries = all.slice(-window);
+    const omitted = all.length - entries.length;
 
     const mandate = currentMandate();
     return ok(
-      `${entries.length} audit entr(ies). Spent ${formatPaise(mandate.spent)} of ` +
+      `${entries.length} of ${all.length} audit entr(ies)` +
+        (omitted > 0 ? ` (${omitted} older not shown — pass a larger limit)` : "") +
+        `. Spent ${formatPaise(mandate.spent)} of ` +
         `${formatPaise(mandate.max_amount)}; ${formatPaise(remainingBudget(mandate))} remaining.`,
       {
+        total_entries: all.length,
+        showing: entries.length,
+        omitted,
         mandate: {
           id: mandate.id,
           max_amount: mandate.max_amount,
