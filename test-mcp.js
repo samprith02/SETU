@@ -122,6 +122,15 @@ expect("₹899 sleeve exceeds the ₹500 per-transaction cap", sleeveCheck.code,
 // ---------------------------------------------------------------------------
 heading("4. initiate_purchase — BLOCKED never reaches the payment rails");
 // ---------------------------------------------------------------------------
+
+// The ledger is append-only and survives between runs, so this run does not
+// start from zero spend. Budget assertions below are made RELATIVE to what the
+// ledger already held — hard-coding ₹0 spent would pass only until the first
+// real captured payment, which is exactly when the suite most needs to work.
+const baseline = parse(await call("get_audit_log", { limit: 1 })).mandate;
+console.log(`  ledger baseline: spent ${formatPaise(baseline.spent)}, ` +
+  `${formatPaise(baseline.remaining)} remaining`);
+
 const blocked = await call("initiate_purchase", {
   product_id: "chg-usbc-65w",
   intent: "test: buy the 65W charger, which the mandate should refuse",
@@ -136,7 +145,7 @@ expect("reported as an error to the agent", blocked.isError, true);
 expect("purchased is false", blockedBody.purchased, false);
 expect("no order id was issued", "order_id" in blockedBody, false);
 expect("the refusing rule is named", blockedBody.blocked_by, "category_not_allowed");
-expect("remaining budget is offered for a substitute", blockedBody.remaining, 200000);
+expect("remaining budget is offered for a substitute", blockedBody.remaining, baseline.remaining);
 
 // ---------------------------------------------------------------------------
 heading("5. initiate_purchase — APPROVED stops at 'awaiting payment'");
@@ -169,8 +178,8 @@ console.log(`  spent after creating an order: ${formatPaise(afterOrder.mandate.s
 console.log(`  remaining:                     ${formatPaise(afterOrder.mandate.remaining)}`);
 
 // An abandoned checkout must not permanently burn budget the user never spent.
-expect("an unpaid order has spent nothing", afterOrder.mandate.spent, 0);
-expect("full budget still available", afterOrder.mandate.remaining, 200000);
+expect("creating an order spent nothing new", afterOrder.mandate.spent, baseline.spent);
+expect("budget is unchanged by an unpaid order", afterOrder.mandate.remaining, baseline.remaining);
 
 // ---------------------------------------------------------------------------
 heading("7. get_audit_log — the trail of what was decided and why");
@@ -181,9 +190,19 @@ for (const line of log.timeline) console.log(`    ${line}`);
 const statuses = log.entries.map((e) => e.status);
 expect("blocked purchase is recorded", statuses.includes("purchase_blocked"), true);
 expect("created order is recorded", statuses.includes("order_created"), true);
-expect("nothing is recorded as captured yet", statuses.includes("payment_captured"), false);
+// Scoped to THIS run's order: an earlier demo may legitimately have captured a
+// payment, and the claim being tested is that the order just created was not.
+expect(
+  "this run's order is not recorded as captured",
+  log.entries.some(
+    (e) => e.order_id === approvedBody.order_id && e.status === "payment_captured",
+  ),
+  false,
+);
 
-const blockedEntry = log.entries.find((e) => e.status === "purchase_blocked");
+// findLast, not find: the ledger persists across runs, so the FIRST entry of a
+// given status belongs to some earlier run. This run's entries are the last ones.
+const blockedEntry = log.entries.findLast((e) => e.status === "purchase_blocked");
 expect("the blocked entry has no order id", blockedEntry.order_id, null);
 expect("the blocked entry records the refusing rule", blockedEntry.mandate.code, "category_not_allowed");
 expect(
@@ -192,7 +211,7 @@ expect(
   "test: buy the 65W charger, which the mandate should refuse",
 );
 
-const orderEntry = log.entries.find((e) => e.status === "order_created");
+const orderEntry = log.entries.findLast((e) => e.status === "order_created");
 expect("the order entry carries the order id", orderEntry.order_id, approvedBody.order_id);
 
 const byOrder = parse(await call("get_audit_log", { order_id: approvedBody.order_id }));
