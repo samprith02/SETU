@@ -56,6 +56,29 @@ export async function createOrder({ amountPaise, receipt, notes = {} }) {
   });
 }
 
+/** Fetch an existing order by id — used to re-open checkout for an order an agent created. */
+export async function fetchOrder(orderId) {
+  return getClient().orders.fetch(orderId);
+}
+
+/**
+ * Fetch a payment from Razorpay, by id.
+ *
+ * This is what closes the gap left by signature verification alone. A valid
+ * signature proves the callback is authentic — that Razorpay really sent it and
+ * nobody altered it in flight. It says nothing about whether the money moved:
+ * an authorised-but-uncaptured payment, or one later failed, carries a
+ * perfectly valid signature too.
+ *
+ * Only Razorpay's own record of `status === "captured"` establishes that, and
+ * only this call reaches it. The returned `amount` is likewise authoritative —
+ * preferred over anything the browser reports, since the browser is exactly the
+ * party that would benefit from lying about it.
+ */
+export async function fetchPayment(paymentId) {
+  return getClient().payments.fetch(paymentId);
+}
+
 /**
  * Verify that a checkout callback genuinely came from Razorpay.
  *

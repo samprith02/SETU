@@ -160,3 +160,50 @@ export function getCatalog() {
 export function getProduct(id) {
   return products.find((product) => product.id === id) ?? null;
 }
+
+/**
+ * Filter the catalog. Lives here rather than in the MCP tool handler so the
+ * HTTP layer can offer the same search without a second implementation drifting
+ * from this one.
+ *
+ * `maxPrice` is integer PAISE, like every other amount in this project. An
+ * agent told "under ₹500" must convert to 50000 before calling — the same
+ * discipline the catalog payload's `unit` field exists to enforce.
+ *
+ * All three filters are optional and combine with AND. `query` matches loosely
+ * across name, description, tags and id, because an agent searching for "phone
+ * case" should find "Clear Phone Case" without knowing the id.
+ */
+export function searchCatalog({ query = null, category = null, maxPrice = null } = {}) {
+  if (maxPrice !== null && (!Number.isInteger(maxPrice) || maxPrice <= 0)) {
+    throw new Error(`maxPrice must be a positive integer in paise, got: ${maxPrice}`);
+  }
+
+  const terms =
+    query === null ? [] : query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
+
+  const matches = products.filter((product) => {
+    if (category !== null && product.category !== category) return false;
+    if (maxPrice !== null && product.price > maxPrice) return false;
+    if (terms.length === 0) return true;
+
+    const haystack = [
+      product.name,
+      product.description,
+      product.id,
+      product.category,
+      ...product.tags,
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    // Every term must appear somewhere — "phone case" should not match a
+    // product that merely mentions "phone".
+    return terms.every((term) => haystack.includes(term));
+  });
+
+  // Cheapest first. An agent working under a spend cap is nearly always looking
+  // for what fits, so the most useful answer should be the first one it reads.
+  const sorted = [...matches].sort((a, b) => a.price - b.price);
+  return { currency: CURRENCY, unit: UNIT, count: sorted.length, products: sorted };
+}
