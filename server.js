@@ -83,6 +83,71 @@ function currentMandate() {
 // tool itself for why that is a correctness concern and not a nicety.
 const DEFAULT_AUDIT_LIMIT = 25;
 
+/**
+ * Catalog products the agent could buy INSTEAD of one the mandate just refused.
+ *
+ * A refusal that only says "no" makes the agent guess; a refusal that names a
+ * permitted substitute makes recovery a single obvious next call. Recovery
+ * itself stays the agent's job — it just calls initiate_purchase again with one
+ * of these ids. There is deliberately no "retry" tool: a tool that re-attempts
+ * a purchase the gate has already refused is a tool for arguing with the gate.
+ *
+ * No new filtering lives here. searchCatalog does the searching, one call per
+ * allowed category, and mandate.check does the deciding — every candidate is
+ * put through the very same gate that just refused, rather than inferred from
+ * the cap. That matters because the cap is not the only rule: an expired
+ * mandate or an exhausted budget refuses everything, and in those cases this
+ * correctly returns nothing rather than suggesting a substitute that would be
+ * refused on the next call. Cheapest first, for the same reason searchCatalog
+ * sorts that way — an agent under a spend cap wants what fits.
+ */
+function suggestAlternatives(mandate, blockedProductId, limit = 2) {
+  return mandate.category_allowlist
+    .flatMap((category) => searchCatalog({ category, maxPrice: mandate.per_txn_cap }).products)
+    .sort((a, b) => a.price - b.price)
+    .filter(
+      (candidate) =>
+        candidate.id !== blockedProductId &&
+        check(mandate, candidate.price, candidate.category).approved,
+    )
+    .slice(0, limit);
+}
+
+// Both refusal paths — the check_mandate preview and the initiate_purchase
+// commit — say the same three things about the substitutes. Built once here so
+// an agent that previews and then commits cannot be told two different stories.
+// test-recovery.js asserts the two paths agree; these keep that true by
+// construction rather than by vigilance.
+
+/** What goes in the audit ledger's `detail` field. */
+const alternativesDetail = (alternatives) =>
+  alternatives.length > 0
+    ? `suggested_alternatives: ${alternatives.map((a) => a.id).join(", ")}`
+    : "suggested_alternatives: none — no catalog product satisfies this mandate";
+
+/**
+ * What gets appended to the summary line — the first thing the agent reads.
+ * An empty list is stated outright rather than left as an absent field: an
+ * agent told nothing will go hunting through the catalog for a substitute that
+ * cannot exist.
+ */
+const alternativesAdvice = (alternatives) =>
+  alternatives.length > 0
+    ? " Permitted alternatives, cheapest first: " +
+      alternatives.map((a) => `${a.name} (${formatPaise(a.price)}, id ${a.id})`).join("; ") +
+      "."
+    : " No product in this catalog is permitted under the current mandate, so there is no substitute.";
+
+/** What goes in the JSON body, for anything that needs to branch on it. */
+const alternativesPayload = (alternatives) =>
+  alternatives.map((a) => ({
+    id: a.id,
+    name: a.name,
+    category: a.category,
+    price: a.price,
+    price_display: formatPaise(a.price),
+  }));
+
 // ---------------------------------------------------------------------------
 // Tool result helpers
 // ---------------------------------------------------------------------------
@@ -181,8 +246,9 @@ server.registerTool(
     title: "Check mandate",
     description:
       "Ask whether buying a product would be permitted under the active spend mandate, WITHOUT " +
-      "buying it. Returns the verdict and, when refused, the specific rule that refused it and " +
-      "how much budget remains — enough to pick a cheaper substitute. " +
+      "buying it. Returns the verdict and, when refused, the specific rule that refused it, how " +
+      "much budget remains, and up to two `alternatives` — real catalog products the mandate WOULD " +
+      "approve, cheapest first. Buy one of those ids instead of searching the catalog yourself. " +
       "The amount and category are read from the catalog, never supplied by the caller. " +
       "This is a preview: initiate_purchase re-runs the same check itself, so calling this first " +
       "is optional, but the check is recorded in the audit log either way.",
@@ -206,6 +272,13 @@ server.registerTool(
     const mandate = currentMandate();
     const verdict = check(mandate, product.price, product.category);
 
+    // A refusal here carries the same substitutes initiate_purchase would offer.
+    // This is the path a careful agent actually takes — it previews before it
+    // commits — so a refusal that named alternatives only on the committing call
+    // would never reach the agent that most deserves it, and would leave it
+    // searching the catalog by hand for something the gate could have named.
+    const alternatives = verdict.approved ? [] : suggestAlternatives(mandate, product.id);
+
     audit.record({
       status: audit.STATUS.MANDATE_CHECKED,
       intent: intent ?? null,
@@ -217,15 +290,22 @@ server.registerTool(
         code: verdict.code,
         reason: verdict.reason,
       },
+      detail: verdict.approved ? null : alternativesDetail(alternatives),
     });
 
-    return ok(verdict.approved ? "PERMITTED (not yet purchased)" : "REFUSED", {
-      ...verdict,
-      product: { id: product.id, name: product.name, category: product.category },
-      unit: UNIT,
-      remaining_display: formatPaise(remainingBudget(mandate)),
-      note: "This was a check only. No order was created and no money moved.",
-    });
+    return ok(
+      verdict.approved
+        ? "PERMITTED (not yet purchased)"
+        : `REFUSED — ${verdict.reason}${alternativesAdvice(alternatives)}`,
+      {
+        ...verdict,
+        product: { id: product.id, name: product.name, category: product.category },
+        unit: UNIT,
+        remaining_display: formatPaise(remainingBudget(mandate)),
+        alternatives: alternativesPayload(alternatives),
+        note: "This was a check only. No order was created and no money moved.",
+      },
+    );
   },
 );
 
@@ -258,7 +338,9 @@ server.registerTool(
     title: "Initiate purchase",
     description:
       "Attempt to buy a product. The purchase is checked against the active spend mandate FIRST — " +
-      "if the mandate refuses, no payment order is created and nothing is charged. " +
+      "if the mandate refuses, no payment order is created and nothing is charged, and the refusal " +
+      "names up to two `alternatives` the mandate WOULD approve. To recover from a refusal, call " +
+      "this tool again with one of those ids — there is no separate retry tool. " +
       "If the mandate approves, a Razorpay order is created and a checkout URL is returned. " +
       "This does NOT complete the payment: a human must open that URL and pay. The tool returns " +
       "status 'awaiting_payment', never 'paid'. Call get_audit_log afterwards to see whether the " +
@@ -296,16 +378,29 @@ server.registerTool(
     };
 
     if (!verdict.approved) {
+      const alternatives = suggestAlternatives(mandate, product.id);
+
+      // The substitutes go in the ledger too. "Blocked, and here is what was
+      // offered instead" is the recovery story an auditor needs; without it the
+      // trail shows a refusal followed by an unexplained purchase of something
+      // else. When nothing qualifies, recording that explicitly is the point —
+      // it distinguishes "no substitute was offered" from "none existed".
       const entry = audit.record({
         status: audit.STATUS.PURCHASE_BLOCKED,
         intent,
         amount: product.price,
         product_id: product.id,
         mandate: mandateRecord,
+        detail: alternativesDetail(alternatives),
       });
-      console.error(`[setu] BLOCKED ${product.id} — ${verdict.code}`);
+      console.error(
+        `[setu] BLOCKED ${product.id} — ${verdict.code}; ` +
+          `${alternatives.length} alternative(s) offered`,
+      );
 
-      return fail(`REFUSED — ${verdict.reason}`, {
+      // Said in the summary line, not only in the JSON: the summary is what the
+      // agent reads first, and the substitute is the whole point of the refusal.
+      return fail(`REFUSED — ${verdict.reason}${alternativesAdvice(alternatives)}`, {
         purchased: false,
         blocked_by: verdict.code,
         reason: verdict.reason,
@@ -314,8 +409,13 @@ server.registerTool(
         unit: UNIT,
         remaining: verdict.remaining,
         remaining_display: formatPaise(verdict.remaining ?? 0),
+        alternatives: alternativesPayload(alternatives),
         audit_entry_id: entry.id,
         note: "No Razorpay order was created. Nothing was charged.",
+        next_step:
+          alternatives.length > 0
+            ? "To recover, call initiate_purchase again with one of the alternative ids above."
+            : "Nothing in the catalog satisfies this mandate. Report that to the user rather than retrying — a different product will be refused too.",
       });
     }
 
