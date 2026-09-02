@@ -146,7 +146,8 @@ literal is a delayed failure, and the fuse burns until the system finally does
 the thing it was built to do. This one was set to go off mid-recording, on the
 one run where the money path was working, with the least time available to
 diagnose it — and it would have looked like the capture logic was broken rather
-than the test.
+than the test. (Confirmed at the end of this entry, once a real payment
+captured: the old suite does exactly that, in four places.)
 
 The trade is also worth naming. The file-backed ledger bought cross-process
 visibility and paid for it in test isolation. Shared durable state between
@@ -183,7 +184,58 @@ intent instead of at capture, the exact rule these assertions guard. Both went
 red, the suite exited non-zero, and the change was reverted and re-verified
 green.
 
----
+### Confirmed against a real payment, later the same evening
+
+The deliberate break above proves the *new* assertions can still bite. The claim
+about the *old* ones — that they would go red on the first captured payment —
+was still only reasoning from how `spent` is derived, never observed. That night
+the first real capture landed —
+`order_TXG6JTm1YHiDa9`, payment `pay_TXG7ojOE1PvLHV`, ₹399.00 — moving `spent`
+from ₹0.00 to ₹399.00 and `remaining` to ₹1,601.00, so the prediction became
+checkable.
+
+The current suite against that ledger: 20/20 mandate, 34/34 MCP, 5/5 recovery,
+exit 0.
+
+The pre-fix `test-mcp.js`, restored straight out of commit `2d73f68` and run
+against that same ledger a few minutes later, by then also carrying the current
+suite's own entries:
+
+```
+FAIL  remaining budget is offered for a substitute
+FAIL  an unpaid order has spent nothing
+FAIL  full budget still available
+FAIL  the order entry carries the order id
+
+  30 passed, 4 failed
+
+  MCP tool surface did NOT behave as specified.
+```
+
+Exit 1, on the first run where money actually moved.
+
+Four failures, not the three this entry anticipated. The extra one is a third
+hardcoded `200000`, in the blocked-purchase section rather than the budget
+section quoted above — the same literal, in a place the original diagnosis had
+not looked. The fourth, `the order entry carries the order id`, is the `find`
+bug: the ledger held an earlier run's `order_created`, so `find` returned that
+instead of the order the test had just made.
+
+One honest caveat about that number: **it is not stable, and that is the point.**
+Which assertions break depends on what the ledger happens to contain when the
+suite runs. On this run the companion assertion `the blocked entry records the
+refusing rule` passed — not because it is sound, but because `get_audit_log` now
+returns a 25-entry window by default, and the older entry that would have broken
+it had fallen outside. A suite whose pass/fail set is a function of ambient state
+does not have a failure count; it has a failure count *today*. Reproducing this
+exactly requires the ledger it ran against, which is the whole defect stated
+another way.
+
+Worth recording because the prediction was *under*-confident about its own blast
+radius. The reasoning identified the mechanism correctly and still undercounted
+the sites, which is the ordinary way this kind of assumption spreads: not one
+careless line, but the same convenient constant reached for repeatedly while the
+environment kept making it true.
 
 ## 4. Two bugs a green test suite could not see
 
