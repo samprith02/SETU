@@ -13,8 +13,11 @@
   </head>
   <body>
     <h1>Setu — test checkout</h1>
-    <p>Harness for the Razorpay test-mode payment loop. Pass a product with
-      <code>?productId=…</code> (default: <code>cbl-usbc-1m</code>).</p>
+    <p>Harness for the Razorpay test-mode payment loop. Two modes:
+      <code>?orderId=…</code> pays an order an agent already created through the
+      mandate gate; <code>?productId=…</code> creates a fresh ungated order
+      (default: <code>cbl-usbc-1m</code>).</p>
+    <p id="intent" hidden></p>
 
     <p><strong id="summary">Loading…</strong></p>
     <button id="pay" disabled>Pay with Razorpay</button>
@@ -24,6 +27,7 @@
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <script>
       const params = new URLSearchParams(location.search);
+      const orderId = params.get("orderId");
       const productId = params.get("productId") || "cbl-usbc-1m";
       const logEl = document.getElementById("log");
       const payBtn = document.getElementById("pay");
@@ -37,24 +41,65 @@
       };
       const rupees = (paise) => "₹" + (paise / 100).toFixed(2);
 
-      // Step 1: ask our server to create a Razorpay order. The amount is decided
-      // server-side from the catalog — the browser never names a price.
+      // Step 1: get an order to pay.
+      //
+      // Two paths, and the difference matters. With ?orderId= the order ALREADY
+      // EXISTS — an agent created it through the MCP mandate gate, which
+      // approved the amount before Razorpay was ever contacted. This page must
+      // pay that order, not mint a new one: creating a second order here would
+      // route around the gate and pay for something nothing had approved.
+      //
+      // With ?productId= there is no mandate involved at all. That is the
+      // deliberately ungated path, kept only to prove the payment rails work in
+      // a browser. Either way the amount is decided server-side from the
+      // catalog — the browser never names a price.
       async function init() {
-        log(`POST /checkout { productId: "${productId}" }`);
-        const res = await fetch("/checkout", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ productId }),
-        });
-        const data = await res.json();
+        let res, data;
+        if (orderId) {
+          log(`GET /order/${orderId} — paying an order the agent already created`);
+          res = await fetch(`/order/${encodeURIComponent(orderId)}`);
+          data = await res.json();
+        } else {
+          log(`POST /checkout { productId: "${productId}" }  (ungated path)`);
+          res = await fetch("/checkout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ productId }),
+          });
+          data = await res.json();
+        }
+
         if (!res.ok) {
-          document.getElementById("summary").textContent = "Failed to create order.";
+          document.getElementById("summary").textContent = orderId
+            ? "Could not load that order."
+            : "Failed to create order.";
           log(`error: ${JSON.stringify(data)}`, "bad");
           return;
         }
-        log(`order created: ${data.order_id} for ${rupees(data.amount)}`, "ok");
-        document.getElementById("summary").textContent =
-          `${data.product.name} — ${rupees(data.amount)}`;
+
+        const name = data.product ? data.product.name : data.order_id;
+        log(
+          orderId
+            ? `order loaded: ${data.order_id} for ${rupees(data.amount)} (status: ${data.status})`
+            : `order created: ${data.order_id} for ${rupees(data.amount)}`,
+          "ok",
+        );
+        document.getElementById("summary").textContent = `${name} — ${rupees(data.amount)}`;
+
+        // The agent's stated reason, carried from the audit ledger. Showing it
+        // to the human who is about to pay is the point of recording it.
+        if (data.intent) {
+          const intentEl = document.getElementById("intent");
+          intentEl.textContent = `Agent's stated intent: "${data.intent}"`;
+          intentEl.hidden = false;
+        }
+
+        // An order Razorpay has already marked paid must not be offered again.
+        if (data.status === "paid") {
+          log("this order is already paid — nothing to do", "ok");
+          return;
+        }
+
         checkout = data;
         payBtn.disabled = false;
       }
@@ -66,24 +111,44 @@
           amount: checkout.amount,
           currency: checkout.currency,
           name: "Setu Campus Tech Essentials",
-          description: checkout.product.name,
+          description: checkout.product ? checkout.product.name : checkout.order_id,
           // Step 3: Razorpay hands back a payment id and a signature.
           handler: async (response) => {
             log(`payment returned: ${response.razorpay_payment_id}`);
-            log("POST /payment/verify — recomputing signature server-side…");
+            log("POST /payment/verify — recomputing signature, then confirming capture…");
             const verifyRes = await fetch("/payment/verify", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(response),
             });
             const result = await verifyRes.json();
-            log(JSON.stringify(result), result.verified ? "ok" : "bad");
+            log(JSON.stringify(result), result.captured ? "ok" : "bad");
+
+            // Three separate claims, reported separately — a genuine signature
+            // is not a captured payment, and a captured payment is only counted
+            // against the mandate if it came through the gate.
             log(
               result.verified
-                ? "VERIFIED — signature matched, payment is genuine."
+                ? "VERIFIED — signature matched, the callback is genuine."
                 : "REJECTED — signature did not match.",
               result.verified ? "ok" : "bad",
             );
+            if (result.verified) {
+              log(
+                result.captured
+                  ? "CAPTURED — Razorpay confirms the money moved."
+                  : `NOT CAPTURED — ${result.error}. No money moved.`,
+                result.captured ? "ok" : "bad",
+              );
+            }
+            if (result.captured) {
+              log(
+                result.counted
+                  ? `COUNTED against the mandate. Total spent: ${rupees(result.total_spent)}`
+                  : "not counted against any mandate (ungated checkout).",
+                "ok",
+              );
+            }
           },
           modal: { ondismiss: () => log("checkout dismissed by user") },
           theme: { color: "#0f766e" },
