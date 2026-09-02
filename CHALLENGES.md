@@ -102,6 +102,89 @@ Closed on Day 2 inside `initiate_purchase`, which fetches the payment with
 
 ---
 
+## 3. A test suite that assumed a clean slate, and would have gone red on camera
+
+**Day 2, 2026-09-02**
+
+### The situation
+
+Day 2 morning made the audit ledger file-backed — `audit-log.jsonl`, append-only,
+written by both the MCP server and the HTTP server. That was necessary: an order
+is created in one process and captured in the other, so an in-memory array would
+have left each blind to the other.
+
+`test-mcp.js` was written the same morning, against a ledger that happened to be
+empty, and quietly encoded that accident as an assumption in two places:
+
+```js
+const orderEntry = log.entries.find((e) => e.status === "order_created");
+expect("an unpaid order has spent nothing", afterOrder.mandate.spent, 0);
+expect("full budget still available", afterOrder.mandate.remaining, 200000);
+```
+
+Both passed. They kept passing for a day.
+
+### How it surfaced
+
+Two manual purchases in the afternoon, made to populate the audit dashboard, and
+`find` started returning the *first* `order_created` entry in the whole ledger —
+a previous run's order — instead of the one the test had just created. Loud,
+immediate, and harmless.
+
+### Why the other one mattered much more
+
+The hardcoded `spent: 0` / `remaining: 200000` failed differently: **it couldn't
+fail yet.**
+
+`spent` is derived from `PAYMENT_CAPTURED` entries, and nothing had ever been
+captured — capture needs a human completing Razorpay's hosted checkout. So those
+two assertions were guaranteed green on every run right up until the first real
+payment settled. The first real payment is the demo.
+
+That is the shape worth naming: an assertion that encodes today's state as a
+literal is a delayed failure, and the fuse burns until the system finally does
+the thing it was built to do. This one was set to go off mid-recording, on the
+one run where the money path was working, with the least time available to
+diagnose it — and it would have looked like the capture logic was broken rather
+than the test.
+
+The trade is also worth naming. The file-backed ledger bought cross-process
+visibility and paid for it in test isolation. Shared durable state between
+processes is exactly what made `get_audit_log` truthful about payments settled
+elsewhere, and exactly what stopped every test run from starting from zero.
+
+### How it was fixed
+
+The budget assertions were never really about ₹0 — they were about *an unpaid
+order changing nothing*. So they now read the ledger's state at the start of the
+run and assert against that:
+
+```js
+const baseline = parse(await call("get_audit_log", { limit: 1 })).mandate;
+...
+expect("creating an order spent nothing new", afterOrder.mandate.spent, baseline.spent);
+expect("budget is unchanged by an unpaid order", afterOrder.mandate.remaining, baseline.remaining);
+```
+
+The literal `0` was a fact about the environment; `baseline.spent` is the
+property actually being tested, and it holds whether the ledger is empty or
+carries a dozen settled payments.
+
+Alongside it: `find` became `findLast`, since this run's entries are the ones
+appended last, and the "nothing captured yet" check was scoped to this run's
+order id rather than asking whether the entire ledger contains a capture.
+
+### Proving the fix could still fail
+
+Per the repo's testing discipline, a rewritten assertion is only worth having if
+it can still go red. `totalCaptured()` was deliberately broken to count
+`ORDER_CREATED` alongside `PAYMENT_CAPTURED` — i.e. to charge the budget at
+intent instead of at capture, the exact rule these assertions guard. Both went
+red, the suite exited non-zero, and the change was reverted and re-verified
+green.
+
+---
+
 ## Scope decisions (deliberate omissions, not oversights)
 
 - **Stock is seeded but never decremented on purchase.** Inventory management is
