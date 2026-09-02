@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Setu — Audit Trail</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 68rem; margin: 2.5rem auto; padding: 0 1rem; line-height: 1.5; color: #18181b; }
+      h1 { margin-bottom: 0.25rem; }
+      .sub { color: #52525b; margin-top: 0; }
+      .strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.25rem 0; }
+      .stat { background: #f4f4f5; border-radius: 6px; padding: 0.5rem 0.9rem; }
+      .stat b { display: block; font-size: 1.25rem; }
+      .stat span { color: #52525b; font-size: 0.8rem; }
+      .controls { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; font-size: 0.9rem; }
+      button { font: inherit; padding: 0.4rem 0.9rem; cursor: pointer; }
+      table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+      th { text-align: left; border-bottom: 2px solid #d4d4d8; padding: 0.5rem 0.6rem; color: #52525b; font-weight: 600; }
+      td { border-bottom: 1px solid #e4e4e7; padding: 0.6rem; vertical-align: top; }
+      tr.blocked, tr.failed { background: #fef2f2; }
+      tr.captured { background: #f0fdf4; }
+      .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; color: #fff; }
+      .b-checked { background: #52525b; }
+      .b-blocked { background: #b91c1c; }
+      .b-created { background: #b45309; }
+      .b-captured { background: #15803d; }
+      .b-failed { background: #b91c1c; }
+      .muted { color: #71717a; }
+      .reason { display: block; color: #52525b; font-size: 0.8rem; margin-top: 0.2rem; }
+      .detail { display: block; color: #b91c1c; font-size: 0.8rem; margin-top: 0.2rem; }
+      .amount { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      code { font-size: 0.82rem; }
+      #error { color: #b91c1c; }
+    </style>
+  </head>
+  <body>
+    <h1>Setu — audit trail</h1>
+    <p class="sub">
+      Every money decision the agent made, in the order it made them. Read live
+      from <code>GET /audit</code> — the same ledger the
+      <code>get_audit_log</code> MCP tool serves back to the agent.
+    </p>
+
+    <div class="strip" id="strip"></div>
+
+    <div class="controls">
+      <button id="refresh">Refresh</button>
+      <label><input type="checkbox" id="auto" checked /> auto-refresh (3s)</label>
+      <span class="muted" id="updated"></span>
+      <span id="error"></span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Status</th>
+          <th>Stated intent</th>
+          <th class="amount">Amount</th>
+          <th>Mandate result</th>
+          <th>Order</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <script>
+      // status -> [row class, badge class, label]. The vocabulary is audit.js's
+      // STATUS enum; this map only decides how each one looks.
+      const LOOK = {
+        mandate_checked: ["", "b-checked", "CHECKED"],
+        purchase_blocked: ["blocked", "b-blocked", "BLOCKED"],
+        order_created: ["", "b-created", "ORDER CREATED"],
+        payment_captured: ["captured", "b-captured", "CAPTURED"],
+        payment_failed: ["failed", "b-failed", "FAILED"],
+      };
+
+      const rowsEl = document.getElementById("rows");
+      const stripEl = document.getElementById("strip");
+      const errorEl = document.getElementById("error");
+      const updatedEl = document.getElementById("updated");
+
+      // Paise -> rupees, for display only. Every figure underneath stays an
+      // integer count of paise; this is the one place it becomes a decimal.
+      // Indian digit grouping, matching mandate.js's formatPaise — the server's
+      // own strings appear on this same page, and ₹1,499.00 next to ₹1499.00
+      // reads as two different numbers.
+      const RUPEE_FORMAT = new Intl.NumberFormat("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      const rupees = (paise) => "₹" + RUPEE_FORMAT.format(paise / 100);
+
+      const el = (tag, text, className) => {
+        const node = document.createElement(tag);
+        // textContent, never innerHTML: `intent` is free text written by the
+        // agent, and an audit view must render what was recorded, not run it.
+        if (text !== undefined && text !== null) node.textContent = text;
+        if (className) node.className = className;
+        return node;
+      };
+
+      function stat(value, label) {
+        const box = el("div", null, "stat");
+        box.append(el("b", value), el("span", label));
+        return box;
+      }
+
+      function renderStrip(data) {
+        const counts = {};
+        for (const entry of data.entries) {
+          counts[entry.status] = (counts[entry.status] || 0) + 1;
+        }
+        stripEl.replaceChildren(
+          stat(String(data.count), "entries"),
+          stat(data.total_captured_display, "captured (counted against mandate)"),
+          stat(String(counts.purchase_blocked || 0), "purchases blocked"),
+          stat(String(counts.order_created || 0), "orders created"),
+          stat(String(counts.payment_failed || 0), "payments failed"),
+        );
+      }
+
+      function renderRow(entry) {
+        const look = LOOK[entry.status] || ["", "b-checked", entry.status];
+        const tr = el("tr", null, look[0]);
+
+        const time = el("td", new Date(entry.timestamp).toLocaleTimeString());
+        time.title = entry.timestamp;
+        tr.append(time);
+
+        const status = el("td");
+        status.append(el("span", look[2], "badge " + look[1]));
+        tr.append(status);
+
+        // A dry-run check records no intent — it was asked as a question, not
+        // acted on. Saying so beats an empty cell.
+        const intent = el("td");
+        if (entry.intent) {
+          intent.append(el("span", "“" + entry.intent + "”"));
+        } else {
+          intent.append(el("span", "no intent stated (dry-run check)", "muted"));
+        }
+        if (entry.product_id) intent.append(el("span", entry.product_id, "reason"));
+        tr.append(intent);
+
+        tr.append(el("td", entry.amount === null ? "—" : rupees(entry.amount), "amount"));
+
+        const mandate = el("td");
+        if (entry.mandate) {
+          mandate.append(el("code", entry.mandate.code));
+          mandate.append(el("span", entry.mandate.reason, "reason"));
+        } else {
+          mandate.append(el("span", "—", "muted"));
+        }
+        // Why an entry says what it says when the mandate verdict doesn't cover
+        // it: signature_mismatch, not_captured, amount_mismatch.
+        if (entry.detail) mandate.append(el("span", entry.detail, "detail"));
+        tr.append(mandate);
+
+        const order = el("td");
+        if (entry.order_id) {
+          order.append(el("code", entry.order_id));
+          if (entry.payment_id) order.append(el("span", entry.payment_id, "reason"));
+          // An order created but never settled is still payable, and this link
+          // is how a human completes what the agent could only start.
+          if (entry.status === "order_created") {
+            const link = el("a", "pay this order →");
+            link.href = "/checkout.html?orderId=" + encodeURIComponent(entry.order_id);
+            const wrap = el("span", null, "reason");
+            wrap.append(link);
+            order.append(wrap);
+          }
+        } else {
+          // The most telling cell on the page: a blocked purchase has no order
+          // id because Razorpay was never contacted at all.
+          order.append(el("span", "no order", "muted"));
+        }
+        tr.append(order);
+
+        return tr;
+      }
+
+      async function load() {
+        try {
+          // ?order_id= narrows the view to one purchase's history — the same
+          // filter get_audit_log takes.
+          const orderId = new URLSearchParams(location.search).get("order_id");
+          const query = orderId ? "?order_id=" + encodeURIComponent(orderId) : "";
+          const res = await fetch("/audit" + query);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || res.status);
+
+          renderStrip(data);
+          if (data.entries.length === 0) {
+            const empty = el("td", "No entries yet. Ask the agent to buy something.", "muted");
+            empty.colSpan = 6;
+            const tr = el("tr");
+            tr.append(empty);
+            rowsEl.replaceChildren(tr);
+          } else {
+            rowsEl.replaceChildren(...data.entries.map(renderRow));
+          }
+          errorEl.textContent = "";
+          updatedEl.textContent = "updated " + new Date().toLocaleTimeString();
+        } catch (err) {
+          errorEl.textContent = "could not read the audit log: " + err.message;
+        }
+      }
+
+      document.getElementById("refresh").addEventListener("click", load);
+      // Polling, so a purchase made in a Claude Code session appears here while
+      // you watch. Nothing on this page ever writes.
+      setInterval(() => {
+        if (document.getElementById("auto").checked) load();
+      }, 3000);
+      load();
+    </script>
+  </body>
+</html>

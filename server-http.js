@@ -255,6 +255,58 @@ app.post("/payment/verify", async (req, res) => {
   });
 });
 
+// Read the audit trail over HTTP.
+//
+// The same ledger `get_audit_log` serves to the agent, served to a browser.
+// Both call audit.list() / audit.findByOrderId() / audit.formatEntry(), so the
+// dashboard cannot show one story while the agent reads another. Nothing is
+// filtered, formatted or totalled here — this route only picks which of
+// audit.js's readers to call and hands back what it returns.
+//
+// Deliberately NOT included: the mandate's terms (cap, allowlist, budget).
+// Those are seeded in the MCP process and this one holds no copy; minting a
+// second mandate here would put an id on screen that no entry refers to. Every
+// entry already carries the verdict that applied to it at the time, which is
+// the version an audit is supposed to show anyway.
+app.get("/audit", (req, res) => {
+  const { limit, order_id: orderId } = req.query;
+
+  if (orderId !== undefined && typeof orderId !== "string") {
+    return res.status(400).json({ error: "order_id_must_be_a_string" });
+  }
+
+  let parsedLimit = null;
+  if (limit !== undefined) {
+    parsedLimit = Number(limit);
+    if (!Number.isInteger(parsedLimit) || parsedLimit <= 0) {
+      return res.status(400).json({ error: "limit_must_be_a_positive_integer", limit });
+    }
+  }
+
+  try {
+    const entries = orderId
+      ? audit.findByOrderId(orderId)
+      : audit.list({ limit: parsedLimit });
+    const captured = audit.totalCaptured();
+
+    res.json({
+      currency: CURRENCY,
+      unit: UNIT,
+      count: entries.length,
+      total_captured: captured,
+      total_captured_display: formatPaise(captured),
+      entries,
+      timeline: entries.map(audit.formatEntry),
+    });
+  } catch (error) {
+    // audit.list() throws on a corrupt line rather than skipping it. A 500 is
+    // the honest answer: a trail that quietly drops entries is worse than one
+    // that refuses to load.
+    console.error(`[setu] audit read failed: ${error.message}`);
+    res.status(500).json({ error: "audit_log_unreadable", detail: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[setu] catalog API listening on http://localhost:${PORT}`);
 });
