@@ -39,13 +39,21 @@ const BASE_URL = process.env.SETU_BASE_URL || "http://localhost:3000";
 // That absence is the whole point. An agent that can mint its own spending
 // authority has no spending limit — it has a formality it can rewrite whenever
 // the limit becomes inconvenient. Delegated authority only means something if
-// it is granted from outside the thing being constrained.
+// it is granted from outside the thing being constrained — outside the agent,
+// and outside the merchant too. A mandate is authorization the CUSTOMER has
+// already granted to their agent: in a real system it would be issued by the
+// customer's bank, wallet, or agent platform (e.g. a signed AP2-style
+// mandate), not handed out by the merchant whose store the agent is buying
+// from.
 //
-// So the mandate is seeded at startup, in the server's own process, before any
-// agent connects. This block is a STAND-IN for a real merchant's admin flow —
-// in production a human would authorise this in a dashboard, or it would arrive
-// signed from the merchant's backend, and it would be scoped to one agent
-// session. What matters for the demo is only that the agent cannot reach it.
+// So the block below is not a stand-in for a merchant admin flow. It is a
+// stand-in for that customer-granted authorization arriving at the merchant's
+// system — seeded at startup, in the server's own process, before any agent
+// connects, scoped to one agent session. That is the other half of why
+// `create_mandate` has no place on the tool surface above: minting a mandate
+// here would mean the merchant (or the agent) authoring the customer's own
+// authorization on their behalf, which defeats it the same way self-minting
+// does. What matters for the demo is only that the agent cannot reach it.
 //
 // The numbers are chosen against the campus-store catalog so both outcomes are
 // demonstrable without contrived inputs:

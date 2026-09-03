@@ -378,6 +378,93 @@ Two things went wrong in live runs and were supposed to:
 
 ---
 
+## 5. A pause to sanity-check the story before Day 3, and two things it found
+
+**Day 3, 2026-09-03**
+
+### The situation
+
+Day 2 ended with the money path proven end to end and the graded scenario
+working: mandate gate, MCP tool surface, audit ledger, graceful-failure
+recovery, all tested (20/20, 34/34, 5/5) and confirmed against a real captured
+payment. Before writing anything new for Day 3, the plan was to stop and read
+back through what had actually been built — the code comments, the README, the
+demo script — as if seeing them for the first time, instead of assuming three
+days of forward motion meant everything already said what it should.
+
+It didn't. Two things were wrong, and neither was something a test could catch
+— both were about the *story* the project was telling, not the code behind it.
+
+### Discovery 1 — the mandate's origin was backwards
+
+`server.js` seeded the demo mandate with a comment calling it a "STAND-IN for a
+real merchant's admin flow." That has the roles backwards. A mandate is
+authorization a *customer* grants to their agent — issued by the customer's
+bank, wallet, or agent platform, the way a signed AP2-style mandate would
+arrive — not something a merchant hands out to itself. Setu checks mandates; it
+does not originate them, and the seed data was never meant to model a
+merchant's internal policy. It was meant to model that customer-granted
+authorization arriving at the merchant's system, before any agent connects.
+
+The distinction isn't cosmetic. It's the same reason `create_mandate` doesn't
+exist as a tool: an agent that can mint its own spending limit has no limit,
+because it can rewrite the limit whenever that's convenient. The comment had
+already stated that reasoning correctly — it just attached the wrong origin to
+the mandate two paragraphs later, which left a reader able to walk away
+thinking the demo represents a merchant authorizing itself: exactly the
+arrangement the architecture exists to rule out.
+
+### Discovery 2 — the recovery demo's substitute could read as a recommendation
+
+The graded failure scenario has the agent ask for a wireless mouse, get refused
+on the ₹500 per-transaction cap, and recover by buying the phone case the
+refusal suggests instead. That sequence is correct and well-tested —
+`test-recovery.js` runs it five times a pass, and the substitute really is the
+closest permitted match under the same-category-first ordering built on Day 2
+(see "the agent as design critic," in the entry above, for why that ordering
+exists at all).
+
+What the demo script and README didn't say clearly enough: a phone case is not
+a mouse, and having the agent complete that purchase *on its own*, mid-script,
+without asking anyone, is a demo simplification — not a claim about correct
+production behavior. Read uncritically, the sequence could pass for "Setu found
+you something better," a recommendation engine's job, instead of what it
+actually is: a spend-authorization gate that refused a purchase and named what
+the existing authority *does* permit. `suggested_alternatives` in the audit
+entry invites the same misreading — it looks like a recommendation was made,
+when what actually happened is that every candidate was re-run through the same
+`check()` that had just issued the refusal, and the results were reported. In
+production, the right move when the exact requested item can't be authorized is
+to surface the block — and whatever alternatives exist — to the customer, and
+let them decide. Not for the agent to complete a different purchase silently.
+
+### What changed, and what didn't
+
+Both were documentation and narrative problems, not code defects — the mandate
+engine, the gate ordering in `initiate_purchase`, and the closest-match
+substitute logic were all already correct and already tested. This pass:
+
+- Reworded the `server.js` mandate comment to state the customer-granted
+  origin, and cross-referenced why `create_mandate` is absent from it.
+- Made the customer → agent → Setu → Razorpay → merchant chain explicit in
+  `README.md`, rewrote the problem statement around the merchant-trust
+  argument, and added an explicit "Setu is not a recommendation engine" line
+  everywhere suggestions are described.
+- Labeled the mouse → phone-case moment in `DEMO.md` as a scripted
+  demonstration of the mechanism, and stated what production should do
+  instead.
+
+Left deliberately alone: the substitute mechanism itself.
+Same-category-first, cheapest-within-category ordering — computed by
+re-running every candidate through the same `check()` that issued the refusal
+— still satisfies the graded bar: an explainable, bounded, gated decision with
+a substitute offered on the record. Only the framing changed; `npm test` was
+re-run after every edit in this pass and stayed at 20/20, 34/34, 5/5, since
+nothing here touches `mandate.js`, `payments.js`, `audit.js`, `catalog.js`, or
+any tool logic.
+
+---
+
 ## Scope decisions (deliberate omissions, not oversights)
 
 - **Stock is seeded but never decremented on purchase.** Inventory management is

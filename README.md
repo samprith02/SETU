@@ -9,8 +9,15 @@ Built for the **Razorpay AI Buildathon 2026 — Track 01, AI Growth & Agentic Co
 
 > *Setu* (सेतु) means "bridge" — this is a bridge between AI buyers and a Razorpay merchant.
 
-> ⚠️ **Work in progress.** Day 1 of a 3-day build is complete. The MCP tool surface,
-> audit ledger, and graceful-failure flow land on Day 2. See [Status](#status).
+**The chain of trust, plainly:** a **Customer** grants a **mandate** → their **AI
+Agent** operates under it → **Setu**, running at the merchant's end, checks and
+gates every purchase attempt against that mandate → **Razorpay** handles the
+actual money movement → the **Merchant** receives a payment it can trust was
+authorized.
+
+> **Status: the full money path is built and tested end to end** — mandate
+> engine, MCP tool surface, audit ledger, and the graceful-failure recovery
+> flow, including a real captured Razorpay test payment. See [Status](#status).
 
 ---
 
@@ -24,8 +31,29 @@ converge on the same three primitives:
 2. **bounded spending authority** instead of a blank cheque,
 3. an **explainable trail** behind every purchase.
 
-A merchant cannot say yes to AI buyers without those. Setu is a small, working
-implementation of the pattern — the guardrail *is* the growth unlock, not a tax on it.
+Primitive 2 is largely solved already, from the customer's side — a mandate is how
+a customer grants their agent bounded spending authority in the first place, issued
+by a bank, a wallet, or an agent platform. What's missing is the other side of the
+transaction: nothing tells the **merchant** that a given purchase attempt actually
+carries that authority, or lets the merchant prove it after the fact. A customer can
+delegate all the spending authority they like — if the merchant has no way to check
+it, or show it was checked, that authority never crosses the counter.
+
+Setu is that missing side. A customer delegates purchasing to an AI agent with
+bounded spending authority; the agent shops and calls to buy; Setu — running at the
+merchant's end — checks every purchase attempt against the mandate before Razorpay
+is ever contacted, and records the decision either way. The mandate is what protects
+the *customer*, from an agent (or a bug, or a bad instruction) overspending. The
+audit trail is what lets the *merchant* trust the channel enough to accept the
+purchase at all. Put directly: bounded, provable spending authority is what makes a
+merchant comfortable accepting AI-agent payments in the first place — without it, an
+AI buyer is indistinguishable from an unbounded one, and no merchant can safely say
+yes to that.
+
+Setu is not a recommendation engine, and it does not interpret or preserve shopping
+intent. It only governs whether a purchase's amount and category are authorized —
+matching what actually gets bought to what the customer meant is the agent's job,
+not Setu's.
 
 ## Architecture
 
@@ -40,6 +68,9 @@ flowchart LR
     F --> E[Audit Ledger]
     B --> E
 ```
+
+The `Fallback Flow` node ranks substitutes by what the mandate permits, not by how
+well they match the request — Setu governs authorization, not recommendation.
 
 | Module | Role |
 | --- | --- |
@@ -81,7 +112,7 @@ Credentials load through Node's built-in `--env-file` flag (Node 20.6+); there i
 
 ```bash
 node --env-file=.env server-http.js    # HTTP API + checkout page on :3000
-npm test                               # mandate engine rule assertions
+npm test                               # mandate + MCP tool + recovery-flow assertions
 ```
 
 ### Register the MCP server
@@ -120,14 +151,20 @@ curl -s http://localhost:3000/product/cbl-usbc-1m
 
 ## Status
 
+Both build days are complete. The full money path is proven end to end — mandate
+check, order creation, checkout, capture, and audit — including a real captured
+Razorpay test payment (see [`CHALLENGES.md`](./CHALLENGES.md)).
+
 - [x] MCP server registered and round-tripping over stdio
 - [x] Agent-readable catalog with a self-describing response envelope
 - [x] Razorpay order creation, checkout page, HMAC signature verification *(confirmed with a real captured test payment)*
 - [x] Mandate engine — per-transaction cap, total budget, category allowlist, expiry
-- [x] Mandate rule tests (`npm test`)
-- [ ] MCP tool surface — `search_catalog`, `get_product`, `check_mandate`, `initiate_purchase`, `get_audit_log`
-- [ ] Audit ledger + explainability view
-- [ ] Graceful failure: over-limit purchase blocked → substitute or step-up approval → recovery
+- [x] MCP tool surface — `search_catalog`, `get_product`, `check_mandate`, `initiate_purchase`, `get_audit_log`
+- [x] Audit ledger + explainability view
+- [x] Graceful failure: over-limit purchase blocked → substitute offered → recovery
+
+`npm test` runs all three suites — mandate, MCP tool, and recovery-flow assertions —
+20/20, 34/34, 5/5, exit 0.
 
 ## Build log
 

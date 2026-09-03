@@ -18,7 +18,7 @@ gracefully.*
 ```
 node --env-file=.env server.js        # MCP server (stdio) — registered as `setu`
 node --env-file=.env server-http.js   # HTTP API on :3000
-npm test                              # mandate engine assertions
+npm test                              # mandate + MCP tool + recovery-flow assertions
 ```
 Razorpay test-mode keys live in `.env` (gitignored, never commit, never log the
 values). Node's built-in `--env-file` does the loading — no `dotenv`. It
@@ -65,3 +65,8 @@ fail: break the rule deliberately, confirm a non-zero exit, then restore.
   Use the Write/Edit tools for file content, not shell heredocs or `-e` strings.
 - An MCP server registered mid-session is invisible to that session — servers load
   at session start. Register before recording the demo.
+- `server-http.js` is a separate process from the MCP server and does not start
+  itself. A checkout URL returned by `initiate_purchase` will 404/"unable to
+  connect" if it isn't running — check with `netstat -ano | grep :3000 | grep
+  LISTENING` before assuming the link is broken, and start it in the background
+  if it's down.

@@ -45,10 +45,13 @@ back to cheapest overall.
 
 One thing to say out loud rather than let a judge catch: a phone case is not a
 mouse. `acc-mouse-wireless` is the only mouse in the catalog, so no permitted
-substitute is a true like-for-like. The mandate's job is to bound spending, not
+substitute is a true like-for-like. Setu is not a recommendation engine and does
+not interpret or preserve shopping intent — it only governs whether a purchase's
+amount and category are authorized. The mandate's job is to bound spending, not
 to shop; the honest framing is "here is what your authority actually permits",
 and raising the per-transaction cap is the real fix if the user genuinely needs
-that mouse.
+that mouse. Matching the substitute to what the customer actually wanted is the
+agent's job, not Setu's.
 
 ## The sequence
 
@@ -63,6 +66,14 @@ cheapest makes the agent re-rank the suggestions itself and buy the ₹120.00
 notebook over the ₹399.00 phone case — correct obedience to the instruction,
 but it throws away the closest-match ordering the server just did and makes the
 demo contradict this document.
+
+**This is a scripted demonstration of the mandate/audit mechanism, not a claim
+that auto-substituting is correct behavior.** The instruction above tells the
+agent to complete the substitute purchase on its own so the demo runs as one
+continuous, unattended sequence — that is a demo simplification. In production,
+when the exact requested item can't be authorized, the right move is to surface
+the block — and any permitted alternatives — to the customer and let them
+decide, not for the agent to silently complete a different purchase.
 
 What happens, in order:
 
@@ -103,5 +114,11 @@ rm audit-log.jsonl                     # start from a clean trail
 node --env-file=.env server-http.js    # dashboard + payment rails on :3000
 ```
 
-The MCP server is launched by Claude Code itself. Register it **before**
-starting the session — a server registered mid-session is invisible to it.
+The MCP server is launched by Claude Code itself, and its tool definitions are
+snapshotted at session start — a session left open since before the last
+`server.js` edit will keep serving the old tool logic even though the server on
+disk is current. So: confirm `setu` is registered (`claude mcp list` should
+report `Connected`), then **start a fresh Claude Code session immediately
+before recording**. Registering mid-session does not substitute for this — a
+server registered mid-session is invisible to that session; it only takes
+effect in the next one.
