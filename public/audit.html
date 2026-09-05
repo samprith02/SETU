@@ -5,64 +5,218 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Setu — Audit Trail</title>
     <style>
-      body { font-family: system-ui, sans-serif; max-width: 68rem; margin: 2.5rem auto; padding: 0 1rem; line-height: 1.5; color: #18181b; }
-      h1 { margin-bottom: 0.25rem; }
-      .sub { color: #52525b; margin-top: 0; }
-      .strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.25rem 0; }
-      .stat { background: #f4f4f5; border-radius: 6px; padding: 0.5rem 0.9rem; }
-      .stat b { display: block; font-size: 1.25rem; }
-      .stat span { color: #52525b; font-size: 0.8rem; }
-      .controls { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; font-size: 0.9rem; }
-      button { font: inherit; padding: 0.4rem 0.9rem; cursor: pointer; }
-      table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
-      th { text-align: left; border-bottom: 2px solid #d4d4d8; padding: 0.5rem 0.6rem; color: #52525b; font-weight: 600; }
-      td { border-bottom: 1px solid #e4e4e7; padding: 0.6rem; vertical-align: top; }
-      tr.blocked, tr.failed { background: #fef2f2; }
-      tr.captured { background: #f0fdf4; }
-      .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; color: #fff; }
-      .b-checked { background: #52525b; }
-      .b-blocked { background: #b91c1c; }
-      .b-created { background: #b45309; }
-      .b-captured { background: #15803d; }
-      .b-failed { background: #b91c1c; }
-      .muted { color: #71717a; }
-      .reason { display: block; color: #52525b; font-size: 0.8rem; margin-top: 0.2rem; }
-      .detail { display: block; color: #b91c1c; font-size: 0.8rem; margin-top: 0.2rem; }
-      .amount { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-      code { font-size: 0.82rem; }
-      #error { color: #b91c1c; }
+      /* A control plane, not a document. Dark because this page sits open on a
+         second monitor while an agent spends money, and because the one thing
+         it must do well is make a BLOCKED row impossible to miss. */
+      :root {
+        --bg: #0b0f14;
+        --panel: #121821;
+        --panel-2: #161d28;
+        --line: #232c3a;
+        --line-soft: #1b2430;
+        --text: #e7edf5;
+        --muted: #8b9bb0;
+        --faint: #5f7189;
+        --accent: #3395ff; /* Razorpay blue */
+        --green: #2ecc71;
+        --amber: #f5a524;
+        --red: #ff5c5c;
+        --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 1180px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+
+      /* ---- masthead ---- */
+      header { display: flex; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+      .brand { display: flex; align-items: center; gap: 0.65rem; }
+      .mark {
+        width: 34px; height: 34px; border-radius: 9px;
+        background: linear-gradient(140deg, var(--accent), #1f6fd0);
+        display: grid; place-items: center;
+        font-weight: 800; font-size: 1rem; color: #fff;
+        box-shadow: 0 0 0 1px rgba(51, 149, 255, 0.25), 0 6px 18px -6px rgba(51, 149, 255, 0.6);
+      }
+      .brand h1 { margin: 0; font-size: 1.15rem; letter-spacing: -0.01em; font-weight: 650; }
+      .brand p { margin: 0; color: var(--faint); font-size: 0.78rem; }
+      .spacer { flex: 1; }
+      .live {
+        display: inline-flex; align-items: center; gap: 0.45rem;
+        color: var(--muted); font-size: 0.78rem;
+        background: var(--panel); border: 1px solid var(--line);
+        padding: 0.35rem 0.7rem; border-radius: 999px;
+      }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+      .dot.on { animation: pulse 2s ease-in-out infinite; }
+      .dot.off { background: var(--faint); animation: none; }
+      .dot.err { background: var(--red); animation: none; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+      @media (prefers-reduced-motion: reduce) { .dot.on { animation: none; } }
+
+      .lede {
+        margin: 1.1rem 0 0; color: var(--muted); max-width: 62ch; font-size: 0.9rem;
+      }
+      .lede code { color: var(--text); font-family: var(--mono); font-size: 0.82em; }
+
+      /* ---- stat tiles ---- */
+      .tiles {
+        display: grid; gap: 0.75rem; margin: 1.5rem 0 0.5rem;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      }
+      .tile {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 12px; padding: 0.9rem 1rem; position: relative; overflow: hidden;
+      }
+      .tile .v {
+        display: block; font-size: 1.6rem; font-weight: 650; letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+      }
+      .tile .k { display: block; color: var(--muted); font-size: 0.76rem; margin-top: 0.15rem; }
+      .tile .note { display: block; color: var(--faint); font-size: 0.72rem; margin-top: 0.35rem; }
+      .tile.hero { border-color: rgba(245, 165, 36, 0.35); background: var(--panel-2); }
+      .tile.hero .v { color: var(--amber); }
+      .tile.money .v { color: var(--green); }
+
+      /* ---- rules fired ---- */
+      .rules { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 1.1rem 0 0; align-items: center; }
+      .rules .label { color: var(--faint); font-size: 0.76rem; margin-right: 0.2rem; }
+      .chip {
+        font-family: var(--mono); font-size: 0.74rem;
+        background: var(--panel); border: 1px solid var(--line);
+        color: var(--muted); padding: 0.2rem 0.55rem; border-radius: 6px;
+      }
+      .chip b { color: var(--text); font-weight: 600; }
+      .chip.deny { border-color: rgba(255, 92, 92, 0.3); color: #ffb3b3; }
+      .chip.allow { border-color: rgba(46, 204, 113, 0.28); color: #9ae6bd; }
+
+      /* ---- controls ---- */
+      .controls {
+        display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+        margin: 1.5rem 0 0.75rem; font-size: 0.82rem; color: var(--muted);
+      }
+      button {
+        font: inherit; font-size: 0.82rem; color: var(--text); cursor: pointer;
+        background: var(--panel-2); border: 1px solid var(--line);
+        padding: 0.4rem 0.85rem; border-radius: 8px;
+      }
+      button:hover { border-color: var(--accent); }
+      label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+      #error { color: var(--red); }
+
+      /* ---- ledger ---- */
+      .panel {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 12px; overflow: hidden;
+      }
+      table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+      th {
+        text-align: left; padding: 0.7rem 0.85rem; color: var(--faint);
+        font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em;
+        text-transform: uppercase; background: var(--panel-2);
+        border-bottom: 1px solid var(--line);
+      }
+      td {
+        padding: 0.8rem 0.85rem; vertical-align: top;
+        border-bottom: 1px solid var(--line-soft);
+      }
+      tbody tr:last-child td { border-bottom: none; }
+      /* The row that carries the whole argument: a purchase the gate refused.
+         Left rail rather than a wash, so it reads at a glance on a projector. */
+      tr.blocked, tr.failed { background: rgba(255, 92, 92, 0.045); box-shadow: inset 3px 0 0 var(--red); }
+      tr.captured { background: rgba(46, 204, 113, 0.05); box-shadow: inset 3px 0 0 var(--green); }
+      tr.created { box-shadow: inset 3px 0 0 var(--accent); }
+
+      .badge {
+        display: inline-block; padding: 0.18rem 0.5rem; border-radius: 5px;
+        font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+        white-space: nowrap; border: 1px solid transparent;
+      }
+      .b-checked { background: rgba(139, 155, 176, 0.14); color: #b9c6d6; border-color: var(--line); }
+      .b-blocked { background: rgba(255, 92, 92, 0.15); color: #ff8f8f; border-color: rgba(255, 92, 92, 0.35); }
+      .b-created { background: rgba(51, 149, 255, 0.14); color: #7fbcff; border-color: rgba(51, 149, 255, 0.32); }
+      .b-captured { background: rgba(46, 204, 113, 0.14); color: #6fdba0; border-color: rgba(46, 204, 113, 0.32); }
+      .b-failed { background: rgba(255, 92, 92, 0.15); color: #ff8f8f; border-color: rgba(255, 92, 92, 0.35); }
+
+      code { font-family: var(--mono); font-size: 0.78rem; color: #cbd8e8; }
+      .muted { color: var(--faint); }
+      .reason { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem; }
+      .detail {
+        display: block; color: #ffb3b3; font-size: 0.76rem; margin-top: 0.3rem;
+        font-family: var(--mono);
+      }
+      .amount {
+        text-align: right; white-space: nowrap;
+        font-variant-numeric: tabular-nums; font-weight: 600;
+      }
+      .intent { font-style: italic; color: var(--text); }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .empty { text-align: center; padding: 3rem 1rem; color: var(--faint); }
+
+      footer { margin-top: 1.25rem; color: var(--faint); font-size: 0.76rem; }
+      @media (max-width: 720px) {
+        th:nth-child(3), td:nth-child(3) { display: none; }
+      }
     </style>
   </head>
   <body>
-    <h1>Setu — audit trail</h1>
-    <p class="sub">
-      Every money decision the agent made, in the order it made them. Read live
-      from <code>GET /audit</code> — the same ledger the
-      <code>get_audit_log</code> MCP tool serves back to the agent.
-    </p>
+    <div class="wrap">
+      <header>
+        <div class="brand">
+          <div class="mark">से</div>
+          <div>
+            <h1>Setu — audit trail</h1>
+            <p>agent commerce gateway · razorpay test mode</p>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <span class="live"><span class="dot on" id="dot"></span><span id="updated">connecting…</span></span>
+      </header>
 
-    <div class="strip" id="strip"></div>
+      <p class="lede">
+        Every money decision the agent made, in the order it made them. Read live from
+        <code>GET /audit</code> — the same ledger the <code>get_audit_log</code> MCP tool
+        serves back to the agent. Nothing on this page can write to it.
+      </p>
 
-    <div class="controls">
-      <button id="refresh">Refresh</button>
-      <label><input type="checkbox" id="auto" checked /> auto-refresh (3s)</label>
-      <span class="muted" id="updated"></span>
-      <span id="error"></span>
+      <div class="tiles" id="tiles"></div>
+      <div class="rules" id="rules"></div>
+
+      <div class="controls">
+        <button id="refresh">Refresh</button>
+        <label><input type="checkbox" id="auto" checked /> auto-refresh (3s)</label>
+        <span id="error"></span>
+      </div>
+
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Status</th>
+              <th>Stated intent</th>
+              <th class="amount">Amount</th>
+              <th>Mandate decision</th>
+              <th>Order</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <footer>
+        Amounts are held as integer paise and formatted for display only. A blocked row has
+        no order id because Razorpay was never contacted.
+      </footer>
     </div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Status</th>
-          <th>Stated intent</th>
-          <th class="amount">Amount</th>
-          <th>Mandate result</th>
-          <th>Order</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
 
     <script>
       // status -> [row class, badge class, label]. The vocabulary is audit.js's
@@ -70,15 +224,17 @@
       const LOOK = {
         mandate_checked: ["", "b-checked", "CHECKED"],
         purchase_blocked: ["blocked", "b-blocked", "BLOCKED"],
-        order_created: ["", "b-created", "ORDER CREATED"],
+        order_created: ["created", "b-created", "ORDER CREATED"],
         payment_captured: ["captured", "b-captured", "CAPTURED"],
         payment_failed: ["failed", "b-failed", "FAILED"],
       };
 
       const rowsEl = document.getElementById("rows");
-      const stripEl = document.getElementById("strip");
+      const tilesEl = document.getElementById("tiles");
+      const rulesEl = document.getElementById("rules");
       const errorEl = document.getElementById("error");
       const updatedEl = document.getElementById("updated");
+      const dotEl = document.getElementById("dot");
 
       // Paise -> rupees, for display only. Every figure underneath stays an
       // integer count of paise; this is the one place it becomes a decimal.
@@ -100,24 +256,80 @@
         return node;
       };
 
-      function stat(value, label) {
-        const box = el("div", null, "stat");
-        box.append(el("b", value), el("span", label));
+      function tile(value, label, note, className) {
+        const box = el("div", null, "tile" + (className ? " " + className : ""));
+        box.append(el("span", value, "v"), el("span", label, "k"));
+        if (note) box.append(el("span", note, "note"));
         return box;
       }
 
-      function renderStrip(data) {
+      /**
+       * The headline figures.
+       *
+       * `blocked` is the one worth putting on a slide: the rupee total the
+       * mandate refused BEFORE any Razorpay order existed. It is summed from
+       * the ledger rather than tracked separately, so it cannot disagree with
+       * the rows underneath it.
+       *
+       * Note what is deliberately absent: the mandate's own cap and budget.
+       * Those live in the MCP process and this one holds no copy — showing a
+       * figure here that no entry refers to would be inventing authority on a
+       * page whose entire job is to be trustworthy about it.
+       */
+      function renderTiles(data) {
         const counts = {};
+        let blockedPaise = 0;
         for (const entry of data.entries) {
           counts[entry.status] = (counts[entry.status] || 0) + 1;
+          if (entry.status === "purchase_blocked" && entry.amount !== null) {
+            blockedPaise += entry.amount;
+          }
         }
-        stripEl.replaceChildren(
-          stat(String(data.count), "entries"),
-          stat(data.total_captured_display, "captured (counted against mandate)"),
-          stat(String(counts.purchase_blocked || 0), "purchases blocked"),
-          stat(String(counts.order_created || 0), "orders created"),
-          stat(String(counts.payment_failed || 0), "payments failed"),
+        tilesEl.replaceChildren(
+          tile(
+            data.total_captured_display,
+            "captured",
+            "money that actually moved",
+            "money",
+          ),
+          tile(
+            rupees(blockedPaise),
+            "blocked by the mandate",
+            "never reached Razorpay",
+            "hero",
+          ),
+          tile(String(data.count), "decisions on the ledger", "checks, blocks, orders, captures"),
+          tile(
+            String(counts.order_created || 0),
+            "orders created",
+            (counts.payment_failed || 0) + " payment(s) failed",
+          ),
         );
+      }
+
+      /**
+       * Which mandate rules actually fired, and how often. This is the
+       * "explainable" claim made countable — a judge can see at a glance that
+       * refusals carry a named rule rather than a generic denial.
+       */
+      function renderRules(data) {
+        const fired = new Map();
+        for (const entry of data.entries) {
+          if (!entry.mandate) continue;
+          const key = entry.mandate.code;
+          fired.set(key, (fired.get(key) || 0) + 1);
+        }
+        if (fired.size === 0) {
+          rulesEl.replaceChildren();
+          return;
+        }
+        const nodes = [el("span", "rules fired", "label")];
+        for (const [code, n] of [...fired].sort((a, b) => b[1] - a[1])) {
+          const chip = el("span", null, "chip " + (code === "approved" ? "allow" : "deny"));
+          chip.append(document.createTextNode(code + " "), el("b", "×" + n));
+          nodes.push(chip);
+        }
+        rulesEl.replaceChildren(...nodes);
       }
 
       function renderRow(entry) {
@@ -136,11 +348,11 @@
         // acted on. Saying so beats an empty cell.
         const intent = el("td");
         if (entry.intent) {
-          intent.append(el("span", "“" + entry.intent + "”"));
+          intent.append(el("span", "“" + entry.intent + "”", "intent"));
         } else {
           intent.append(el("span", "no intent stated (dry-run check)", "muted"));
         }
-        if (entry.product_id) intent.append(el("span", entry.product_id, "reason"));
+        if (entry.product_id) intent.append(el("code", entry.product_id, "reason"));
         tr.append(intent);
 
         tr.append(el("td", entry.amount === null ? "—" : rupees(entry.amount), "amount"));
@@ -160,7 +372,7 @@
         const order = el("td");
         if (entry.order_id) {
           order.append(el("code", entry.order_id));
-          if (entry.payment_id) order.append(el("span", entry.payment_id, "reason"));
+          if (entry.payment_id) order.append(el("code", entry.payment_id, "reason"));
           // An order created but never settled is still payable, and this link
           // is how a human completes what the agent could only start.
           if (entry.status === "order_created") {
@@ -190,9 +402,10 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || res.status);
 
-          renderStrip(data);
+          renderTiles(data);
+          renderRules(data);
           if (data.entries.length === 0) {
-            const empty = el("td", "No entries yet. Ask the agent to buy something.", "muted");
+            const empty = el("td", "No entries yet. Ask the agent to buy something.", "empty");
             empty.colSpan = 6;
             const tr = el("tr");
             tr.append(empty);
@@ -201,8 +414,11 @@
             rowsEl.replaceChildren(...data.entries.map(renderRow));
           }
           errorEl.textContent = "";
+          dotEl.className = "dot " + (document.getElementById("auto").checked ? "on" : "off");
           updatedEl.textContent = "updated " + new Date().toLocaleTimeString();
         } catch (err) {
+          dotEl.className = "dot err";
+          updatedEl.textContent = "disconnected";
           errorEl.textContent = "could not read the audit log: " + err.message;
         }
       }

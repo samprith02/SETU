@@ -5,24 +5,94 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Setu — Test Checkout</title>
     <style>
-      body { font-family: system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
-      button { font: inherit; padding: 0.6rem 1.2rem; cursor: pointer; }
-      pre { background: #f4f4f5; padding: 0.75rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; }
-      .ok { color: #15803d; } .bad { color: #b91c1c; }
+      /* Same palette as audit.html — this page and the dashboard are two views
+         of one system and should not look like two different projects. */
+      :root {
+        --bg: #0b0f14;
+        --panel: #121821;
+        --panel-2: #161d28;
+        --line: #232c3a;
+        --text: #e7edf5;
+        --muted: #8b9bb0;
+        --faint: #5f7189;
+        --accent: #3395ff;
+        --green: #2ecc71;
+        --red: #ff5c5c;
+        --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 38rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
+      .brand { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 1.5rem; }
+      .mark {
+        width: 34px; height: 34px; border-radius: 9px;
+        background: linear-gradient(140deg, var(--accent), #1f6fd0);
+        display: grid; place-items: center; font-weight: 800; color: #fff;
+        box-shadow: 0 0 0 1px rgba(51, 149, 255, 0.25), 0 6px 18px -6px rgba(51, 149, 255, 0.6);
+      }
+      .brand h1 { margin: 0; font-size: 1.1rem; font-weight: 650; letter-spacing: -0.01em; }
+      .brand p { margin: 0; color: var(--faint); font-size: 0.78rem; }
+      .lede { color: var(--muted); font-size: 0.86rem; }
+      code { font-family: var(--mono); font-size: 0.82em; color: #cbd8e8; }
+      .card {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 12px; padding: 1.25rem; margin: 1.5rem 0;
+      }
+      #intent {
+        margin: 0 0 1rem; padding: 0.7rem 0.9rem; border-radius: 8px;
+        background: var(--panel-2); border-left: 3px solid var(--accent);
+        color: var(--muted); font-size: 0.85rem; font-style: italic;
+      }
+      #summary { display: block; font-size: 1.25rem; font-weight: 650; letter-spacing: -0.01em; }
+      button {
+        font: inherit; font-weight: 600; color: #fff; cursor: pointer;
+        background: var(--accent); border: none;
+        padding: 0.7rem 1.4rem; border-radius: 9px; margin-top: 1rem;
+        transition: filter 0.15s ease;
+      }
+      button:hover:not(:disabled) { filter: brightness(1.12); }
+      button:disabled { background: var(--panel-2); color: var(--faint); cursor: not-allowed; }
+      h2 {
+        font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase;
+        color: var(--faint); font-weight: 600; margin: 2rem 0 0.6rem;
+      }
+      pre {
+        background: var(--panel); border: 1px solid var(--line); color: var(--muted);
+        font-family: var(--mono); font-size: 0.78rem;
+        padding: 0.9rem; border-radius: 10px; overflow-x: auto;
+        white-space: pre-wrap; margin: 0; min-height: 3rem;
+      }
+      .ok { color: var(--green); } .bad { color: var(--red); }
     </style>
   </head>
   <body>
-    <h1>Setu — test checkout</h1>
-    <p>Harness for the Razorpay test-mode payment loop. Two modes:
-      <code>?orderId=…</code> pays an order an agent already created through the
-      mandate gate; <code>?productId=…</code> creates a fresh ungated order
-      (default: <code>cbl-usbc-1m</code>).</p>
-    <p id="intent" hidden></p>
+    <div class="wrap">
+      <div class="brand">
+        <div class="mark">से</div>
+        <div>
+          <h1>Setu — test checkout</h1>
+          <p>razorpay test mode · no real money moves</p>
+        </div>
+      </div>
 
-    <p><strong id="summary">Loading…</strong></p>
-    <button id="pay" disabled>Pay with Razorpay</button>
-    <h2>Log</h2>
-    <pre id="log"></pre>
+      <p class="lede">Harness for the Razorpay test-mode payment loop. Two modes:
+        <code>?orderId=…</code> pays an order an agent already created through the
+        mandate gate; <code>?productId=…</code> creates a fresh ungated order
+        (default: <code>cbl-usbc-1m</code>).</p>
+
+      <div class="card">
+        <p id="intent" hidden></p>
+        <strong id="summary">Loading…</strong>
+        <button id="pay" disabled>Pay with Razorpay</button>
+      </div>
+
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </div>
 
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
     <script>
