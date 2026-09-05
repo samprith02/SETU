@@ -23,6 +23,14 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static("public"));
 
+// public/ has audit.html and checkout.html but no index.html, so with no
+// route here the bare port 404s with Express's own "Cannot GET /" — which
+// reads as the server being broken when it's actually just missing a front
+// door. The dashboard is the thing anyone hitting this port wants to see.
+app.get("/", (req, res) => {
+  res.redirect("/audit.html");
+});
+
 app.get("/catalog", (req, res) => {
   res.json(getCatalog());
 });
