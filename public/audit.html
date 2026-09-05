@@ -127,6 +127,8 @@
         padding: 0.8rem 0.85rem; vertical-align: top;
         border-bottom: 1px solid var(--line-soft);
       }
+      /* The clock reads as one token; wrapping it mid-timestamp looks broken. */
+      td:first-child { white-space: nowrap; color: var(--muted); }
       tbody tr:last-child td { border-bottom: none; }
       /* The row that carries the whole argument: a purchase the gate refused.
          Left rail rather than a wash, so it reads at a glance on a projector. */
@@ -148,10 +150,16 @@
       code { font-family: var(--mono); font-size: 0.78rem; color: #cbd8e8; }
       .muted { color: var(--faint); }
       .reason { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem; }
+      /* `detail` carries two very different things. On a blocked row it is the
+         list of permitted substitutes — the constructive half of the refusal,
+         and the wrong thing to paint as another error. On a failed payment it
+         is signature_mismatch or not_captured, which is an error. Accent by
+         default, red only where it genuinely reports a failure. */
       .detail {
-        display: block; color: #ffb3b3; font-size: 0.76rem; margin-top: 0.3rem;
+        display: block; color: #7fbcff; font-size: 0.76rem; margin-top: 0.3rem;
         font-family: var(--mono);
       }
+      tr.failed .detail { color: #ffb3b3; }
       .amount {
         text-align: right; white-space: nowrap;
         font-variant-numeric: tabular-nums; font-weight: 600;
