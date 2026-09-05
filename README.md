@@ -50,10 +50,23 @@ merchant comfortable accepting AI-agent payments in the first place — without 
 AI buyer is indistinguishable from an unbounded one, and no merchant can safely say
 yes to that.
 
-Setu is not a recommendation engine, and it does not interpret or preserve shopping
-intent. It only governs whether a purchase's amount and category are authorized —
-matching what actually gets bought to what the customer meant is the agent's job,
-not Setu's.
+Setu is not a recommendation engine. It decides whether a purchase's amount and
+category are authorized; it does not decide what the customer should want. When a
+purchase is refused it will name permitted alternatives, ordered by how closely they
+match the refused product — but that ordering only sequences a list every member of
+which has already passed the same `check()` that issued the refusal. Relevance
+ranking can never widen what is permitted, only make an authorized list easier to
+act on.
+
+**Why this is a revenue feature, not a safety tax.** Track 01's bar is trust, but its
+headline is *growing the merchant's revenue* — and these are the same thing. A
+merchant with no way to verify agent authority has two options, and both cost money:
+refuse AI buyers and forfeit the channel, or accept them blind and absorb the
+disputes. Setu is what lets the merchant say yes. It also protects the individual
+sale: a refused ₹749 mouse answered with a permitted ₹449 mouse is a transaction the
+merchant keeps, where a bare refusal — or a substitute that ignores what was asked
+for — is one it loses. Bounded spending is what makes the sale possible, not what
+costs it.
 
 ## Architecture
 
@@ -69,12 +82,16 @@ flowchart LR
     B --> E
 ```
 
-The `Fallback Flow` node ranks substitutes by what the mandate permits, not by how
-well they match the request — Setu governs authorization, not recommendation.
+The `Fallback Flow` node only ever proposes products the mandate already permits —
+every candidate is re-run through the same `check()` that issued the refusal. Among
+those, it orders by closeness to the refused product (shared tags, then category,
+then price), so a refused mouse is answered with a cheaper mouse rather than with the
+cheapest thing in the shop. Authorization is the mandate's decision; ranking only
+sequences the result.
 
 | Module | Role |
 | --- | --- |
-| `catalog.js` | Agent-readable product feed, 12 SKUs for a fictional campus tech store |
+| `catalog.js` | Agent-readable product feed, 13 SKUs for a fictional campus tech store |
 | `mandate.js` | Spend cap + per-transaction cap + category allowlist + expiry — *bounded and gated* |
 | `payments.js` | Razorpay order creation and HMAC signature verification |
 | `server.js` | MCP server (stdio) — the tool surface an agent calls |

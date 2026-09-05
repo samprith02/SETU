@@ -22,36 +22,41 @@ Seeded in `server.js` at startup, deliberately not creatable by the agent:
 | Role | Product id | Price | Category | Outcome |
 | --- | --- | --- | --- | --- |
 | **Blocked** | `acc-mouse-wireless` | ₹749.00 | accessories | `per_txn_cap_exceeded` |
-| **Substitute** | `acc-case-clear` | ₹399.00 | accessories | approved |
+| **Substitute** | `acc-mouse-wired` | ₹449.00 | accessories | approved |
 
 The mouse is the right thing to be refused: its category **is** on the
 allowlist, so the refusal can only be about the ₹500 cap. A charger would also
 be refused, but on category, which invites the objection "you just picked a
 product the list forbids." This one isolates the cap as the binding rule.
 
-`acc-case-clear` is not chosen by hand — it is the first entry in the
+`acc-mouse-wired` is not chosen by hand — it is the first entry in the
 `alternatives` the refusal itself returns. Suggestions are ordered **closest
-match first**: the refused product's own category ahead of everything else,
-cheapest within each group. So a refused ₹749 accessory is answered with the
-cheapest permitted accessory, not with the cheapest thing in the shop. The
-second suggestion is `stn-notebook-a5` (₹120.00), the cheapest permitted
-product overall.
+match first**: most tags shared with the refused product, then its category,
+then cheapest. The wired mouse shares three tags with the wireless one (`mouse`,
+`laptop`, `usb`); the phone case shares none.
 
-That ordering matters on camera. Under pure cheapest-first the refusal answered
-"you can't have a mouse" with "have a notebook", which reads as the gate not
-understanding the request. When the refusal is about the *category* instead —
-try `chg-usbc-65w` — nothing shares that category, and the list correctly falls
-back to cheapest overall.
+**The ordering is the thing to point at on camera.** The list is deliberately
+NOT in price order — ₹449.00 is offered *ahead of* the ₹399.00 phone case. That
+inversion is visible proof the gate ranked by relevance rather than by price. A
+refusal that answers "you can't have a mouse" with "have a notebook" is the gate
+changing the subject; one that answers with a cheaper mouse is a recovered sale.
 
-One thing to say out loud rather than let a judge catch: a phone case is not a
-mouse. `acc-mouse-wireless` is the only mouse in the catalog, so no permitted
-substitute is a true like-for-like. Setu is not a recommendation engine and does
-not interpret or preserve shopping intent — it only governs whether a purchase's
-amount and category are authorized. The mandate's job is to bound spending, not
-to shop; the honest framing is "here is what your authority actually permits",
-and raising the per-transaction cap is the real fix if the user genuinely needs
-that mouse. Matching the substitute to what the customer actually wanted is the
-agent's job, not Setu's.
+Two earlier orderings both failed here, and the failure is worth a sentence out
+loud. Cheapest-first answered the mouse with a ₹120 notebook. Category-first was
+still too coarse — "accessories" holds mice, cases, sleeves and stands — so it
+answered with the cheapest accessory, a phone case. Only shared tags encode
+"same kind of thing".
+
+Say this out loud rather than let a judge catch it: **Setu is not a
+recommendation engine.** It does not interpret shopping intent, and it is not
+trying to. Ranking substitutes by relevance is a courtesy the refusal can afford
+because every candidate has already been through the same `check()` that just
+refused — the ranking decides only the *order* of an already-authorized list, never
+what is permitted. The mandate's job is to bound spending; if the customer
+genuinely needs the ₹749 mouse, the real fix is a higher cap, not a cleverer
+suggestion. When the refusal is about the *category* instead — try
+`chg-usbc-65w` — few candidates share tags, none share the category, both keys
+flatten, and the list correctly falls back to cheapest overall.
 
 ## The sequence
 
@@ -63,9 +68,10 @@ Ask the agent, in a Claude Code session with the `setu` MCP server registered:
 
 Say "the first alternative", not "the cheapest". Verified live: asking for the
 cheapest makes the agent re-rank the suggestions itself and buy the ₹120.00
-notebook over the ₹399.00 phone case — correct obedience to the instruction,
+notebook over the ₹449.00 wired mouse — correct obedience to the instruction,
 but it throws away the closest-match ordering the server just did and makes the
-demo contradict this document.
+demo contradict this document. It also throws away the sale the merchant would
+otherwise have kept.
 
 **This is a scripted demonstration of the mandate/audit mechanism, not a claim
 that auto-substituting is correct behavior.** The instruction above tells the
@@ -81,12 +87,13 @@ What happens, in order:
    `per_txn_cap_exceeded`. No Razorpay order is created — the gate runs before
    the payment rails are touched, so there is nothing to cancel.
 2. **The refusal names substitutes.** Both the preview and the committing call
-   return the same two, in the same order: `acc-case-clear` (₹399.00, the same
-   category that was refused) and `stn-notebook-a5` (₹120.00). Every candidate
+   return the same two, in the same order: `acc-mouse-wired` (₹449.00, a real
+   like-for-like) and `acc-case-clear` (₹399.00). Note the list is not in price
+   order — that is the relevance ranking showing. Every candidate
    has been put through the same `check()` that just refused, so a suggestion
    cannot itself be refused on the next call.
 3. **Recovery is an ordinary second call.** `initiate_purchase` with
-   `acc-case-clear`. There is no retry tool — a tool that re-attempts a
+   `acc-mouse-wired`. There is no retry tool — a tool that re-attempts a
    purchase the gate refused is a tool for arguing with the gate.
 4. **A real Razorpay test-mode order is created**, status `awaiting_payment`.
    The tool never claims the purchase completed; a human still has to pay.
@@ -100,12 +107,14 @@ On the dashboard, the blocked row is the one that matters:
 - **Amount ₹749.00**, **rule `per_txn_cap_exceeded`**, and the reason in plain
   words.
 - **Order column reads "no order"** — Razorpay was never contacted.
-- **The detail line reads `suggested_alternatives: acc-case-clear,
-  stn-notebook-a5`** — the recovery is on the record, so the next row is not an
+- **The detail line reads `suggested_alternatives: acc-mouse-wired,
+  acc-case-clear`** — the recovery is on the record, so the next row is not an
   unexplained purchase of something the user never asked for.
+- **The tile reading "₹749.00 blocked by the mandate"** — spend that never
+  reached Razorpay, summed from these same rows.
 
-Then the row below it: ORDER CREATED, ₹399.00, `acc-case-clear`, with a real
-order id.
+Then the row below it: ORDER CREATED, ₹449.00, `acc-mouse-wired`, with a real
+order id. The customer asked for a mouse and got a mouse.
 
 ## Before recording
 

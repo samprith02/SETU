@@ -463,6 +463,57 @@ re-run after every edit in this pass and stayed at 20/20, 34/34, 5/5, since
 nothing here touches `mandate.js`, `payments.js`, `audit.js`, `catalog.js`, or
 any tool logic.
 
+### Discovery 3 — the honest caveat was hiding a fixable defect
+
+The entry above closed by leaving the substitute mechanism alone and fixing the
+framing instead: label the mouse → phone-case moment a demo simplification, say
+plainly that a phone case is not a mouse, and move on. That was the wrong call,
+and re-reading `DEMO.md` cold is what exposed it. The document had a paragraph
+whose job was to apologise, in advance, for something a judge was going to
+notice anyway.
+
+A caveat that well-written is a smell. The reason no permitted substitute was a
+like-for-like was not a deep property of spend-authorization — it was that the
+seed catalog happened to stock exactly one mouse. The constraint was in the
+fixture, and it had been reasoned about as though it were in the design.
+
+Two changes, and both were needed; either alone does nothing:
+
+- **The catalog now stocks a ₹449 wired mouse**, putting the ₹500 cap between
+  the two mice. A refusal is only useful if recovery doesn't mean abandoning
+  what the customer asked for, and that needs a real substitute to exist.
+- **Substitutes are ranked by shared tags, then category, then price.** Adding
+  the mouse alone would have changed nothing visible: under the
+  same-category-first ordering the ₹399 phone case still outranked it, because
+  "accessories" holds mice, cases, sleeves and stands and is far too coarse to
+  encode "same kind of thing". The wired mouse shares three tags with the
+  wireless one; the phone case shares none.
+
+The demo now offers ₹449 *ahead of* ₹399 — a list visibly not in price order,
+which is the clearest possible on-camera evidence that the ranking is by
+relevance. `test-recovery.js` asserts the first substitute shares tags with the
+refused product whenever such a product exists; deleting the tag key from the
+sort makes it exit non-zero, which was confirmed deliberately before the change
+was committed.
+
+What did not change, and matters more than what did: the ranking still only
+decides the *order* of candidates that have each already been through the same
+`check()` that issued the refusal. It cannot widen what is permitted. "Setu is
+not a recommendation engine" survives intact — relevance ordering is a courtesy
+the refusal can afford precisely because authorization was settled first.
+
+The reframing this unlocked is the part worth keeping. Track 01's headline is
+*"grow the merchant's revenue"*, and a gate that answers a refused ₹749 mouse
+with a ₹449 mouse converts a lost sale into a completed one. Under the old
+ordering the same refusal produced either an abandoned purchase or the wrong
+item. Bounded spending and merchant revenue stopped being a trade-off to
+apologise for and became the same feature — which is the argument the
+submission should have been making all along.
+
+**Lesson: when a document works unusually hard to excuse a behaviour, check
+whether the behaviour is load-bearing or just unexamined.** This one was seeded
+data nobody had revisited since Day 1.
+
 ---
 
 ## Scope decisions (deliberate omissions, not oversights)
