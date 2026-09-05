@@ -8,36 +8,35 @@
       /* Same palette as audit.html — this page and the dashboard are two views
          of one system and should not look like two different projects. */
       :root {
-        --bg: #0b0f14;
-        --panel: #121821;
-        --panel-2: #161d28;
-        --line: #232c3a;
-        --text: #e7edf5;
-        --muted: #8b9bb0;
-        --faint: #5f7189;
-        --accent: #3395ff;
-        --green: #2ecc71;
-        --red: #ff5c5c;
+        --bg: #f5f6f8;
+        --panel: #ffffff;
+        --panel-2: #fafbfc;
+        --line: #e3e6ea;
+        --text: #1a1d24;
+        --muted: #5b6472;
+        --faint: #8991a0;
+        --accent: #2f6fed;
+        --green: #1a7f4b;
+        --red: #c0261f;
         --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0; background: var(--bg); color: var(--text);
-        font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-family: -apple-system, "Segoe UI", system-ui, Roboto, Arial, sans-serif;
         font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased;
       }
       .wrap { max-width: 38rem; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
       .brand { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 1.5rem; }
       .mark {
-        width: 34px; height: 34px; border-radius: 9px;
-        background: linear-gradient(140deg, var(--accent), #1f6fd0);
-        display: grid; place-items: center; font-weight: 800; color: #fff;
-        box-shadow: 0 0 0 1px rgba(51, 149, 255, 0.25), 0 6px 18px -6px rgba(51, 149, 255, 0.6);
+        width: 34px; height: 34px; border-radius: 8px;
+        background: var(--accent);
+        display: grid; place-items: center; font-weight: 700; color: #fff;
       }
       .brand h1 { margin: 0; font-size: 1.1rem; font-weight: 650; letter-spacing: -0.01em; }
       .brand p { margin: 0; color: var(--faint); font-size: 0.78rem; }
       .lede { color: var(--muted); font-size: 0.86rem; }
-      code { font-family: var(--mono); font-size: 0.82em; color: #cbd8e8; }
+      code { font-family: var(--mono); font-size: 0.82em; color: #364154; background: var(--panel-2); padding: 0.1em 0.35em; border-radius: 4px; }
       .card {
         background: var(--panel); border: 1px solid var(--line);
         border-radius: 12px; padding: 1.25rem; margin: 1.5rem 0;

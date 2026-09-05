@@ -5,30 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Setu — Audit Trail</title>
     <style>
-      /* A control plane, not a document. Dark because this page sits open on a
-         second monitor while an agent spends money, and because the one thing
-         it must do well is make a BLOCKED row impossible to miss. */
+      /* Light, plain, and legible — a ledger a merchant's ops team would
+         actually trust, not a dashboard trying to look impressive. One accent
+         color, real borders instead of glow, and status carried by a left
+         rail + badge rather than a wash of color across the row. */
       :root {
-        --bg: #0b0f14;
-        --panel: #121821;
-        --panel-2: #161d28;
-        --line: #232c3a;
-        --line-soft: #1b2430;
-        --text: #e7edf5;
-        --muted: #8b9bb0;
-        --faint: #5f7189;
-        --accent: #3395ff; /* Razorpay blue */
-        --green: #2ecc71;
-        --amber: #f5a524;
-        --red: #ff5c5c;
+        --bg: #f5f6f8;
+        --panel: #ffffff;
+        --panel-2: #fafbfc;
+        --line: #e3e6ea;
+        --line-soft: #edeff2;
+        --text: #1a1d24;
+        --muted: #5b6472;
+        --faint: #8991a0;
+        --accent: #2f6fed; /* Razorpay-adjacent blue */
+        --accent-soft: #eef3fe;
+        --green: #1a7f4b;
+        --green-soft: #eaf7f0;
+        --amber: #b5690a;
+        --amber-soft: #fdf3e6;
+        --red: #c0261f;
+        --red-soft: #fceeed;
         --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+        --sans: -apple-system, "Segoe UI", system-ui, Roboto, Arial, sans-serif;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         background: var(--bg);
         color: var(--text);
-        font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-family: var(--sans);
         font-size: 14px;
         line-height: 1.5;
         -webkit-font-smoothing: antialiased;
@@ -37,117 +43,118 @@
 
       /* ---- masthead ---- */
       header { display: flex; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
-      .brand { display: flex; align-items: center; gap: 0.65rem; }
+      .brand { display: flex; align-items: center; gap: 0.7rem; }
       .mark {
-        width: 34px; height: 34px; border-radius: 9px;
-        background: linear-gradient(140deg, var(--accent), #1f6fd0);
+        width: 34px; height: 34px; border-radius: 8px;
+        background: var(--accent);
         display: grid; place-items: center;
-        font-weight: 800; font-size: 1rem; color: #fff;
-        box-shadow: 0 0 0 1px rgba(51, 149, 255, 0.25), 0 6px 18px -6px rgba(51, 149, 255, 0.6);
+        font-weight: 700; font-size: 1rem; color: #fff;
       }
-      .brand h1 { margin: 0; font-size: 1.15rem; letter-spacing: -0.01em; font-weight: 650; }
+      .brand h1 { margin: 0; font-size: 1.2rem; letter-spacing: -0.01em; font-weight: 650; color: var(--text); }
       .brand p { margin: 0; color: var(--faint); font-size: 0.78rem; }
       .spacer { flex: 1; }
       .live {
         display: inline-flex; align-items: center; gap: 0.45rem;
         color: var(--muted); font-size: 0.78rem;
         background: var(--panel); border: 1px solid var(--line);
-        padding: 0.35rem 0.7rem; border-radius: 999px;
+        padding: 0.35rem 0.75rem; border-radius: 999px;
       }
       .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
       .dot.on { animation: pulse 2s ease-in-out infinite; }
       .dot.off { background: var(--faint); animation: none; }
       .dot.err { background: var(--red); animation: none; }
-      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
       @media (prefers-reduced-motion: reduce) { .dot.on { animation: none; } }
 
       .lede {
-        margin: 1.1rem 0 0; color: var(--muted); max-width: 62ch; font-size: 0.9rem;
+        margin: 1.1rem 0 0; color: var(--muted); max-width: 64ch; font-size: 0.9rem;
       }
-      .lede code { color: var(--text); font-family: var(--mono); font-size: 0.82em; }
+      .lede code { color: var(--text); font-family: var(--mono); font-size: 0.82em; background: var(--panel-2); padding: 0.1em 0.35em; border-radius: 4px; }
 
       /* ---- stat tiles ---- */
       .tiles {
-        display: grid; gap: 0.75rem; margin: 1.5rem 0 0.5rem;
+        display: grid; gap: 0.85rem; margin: 1.5rem 0 0.5rem;
         grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
       }
       .tile {
         background: var(--panel); border: 1px solid var(--line);
-        border-radius: 12px; padding: 0.9rem 1rem; position: relative; overflow: hidden;
+        border-radius: 10px; padding: 0.95rem 1.1rem;
       }
       .tile .v {
         display: block; font-size: 1.6rem; font-weight: 650; letter-spacing: -0.02em;
-        font-variant-numeric: tabular-nums;
+        font-variant-numeric: tabular-nums; color: var(--text);
       }
-      .tile .k { display: block; color: var(--muted); font-size: 0.76rem; margin-top: 0.15rem; }
+      .tile .k { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.2rem; font-weight: 550; }
       .tile .note { display: block; color: var(--faint); font-size: 0.72rem; margin-top: 0.35rem; }
-      .tile.hero { border-color: rgba(245, 165, 36, 0.35); background: var(--panel-2); }
+      .tile.hero { border-color: #f0ceac; background: var(--amber-soft); }
       .tile.hero .v { color: var(--amber); }
+      .tile.money { border-color: #bfe3cd; background: var(--green-soft); }
       .tile.money .v { color: var(--green); }
 
       /* ---- rules fired ---- */
-      .rules { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 1.1rem 0 0; align-items: center; }
+      .rules { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 1.2rem 0 0; align-items: center; }
       .rules .label { color: var(--faint); font-size: 0.76rem; margin-right: 0.2rem; }
       .chip {
         font-family: var(--mono); font-size: 0.74rem;
         background: var(--panel); border: 1px solid var(--line);
-        color: var(--muted); padding: 0.2rem 0.55rem; border-radius: 6px;
+        color: var(--muted); padding: 0.2rem 0.6rem; border-radius: 6px;
       }
-      .chip b { color: var(--text); font-weight: 600; }
-      .chip.deny { border-color: rgba(255, 92, 92, 0.3); color: #ffb3b3; }
-      .chip.allow { border-color: rgba(46, 204, 113, 0.28); color: #9ae6bd; }
+      .chip b { color: var(--text); font-weight: 700; }
+      .chip.deny { border-color: #eebab5; background: var(--red-soft); color: #8f231d; }
+      .chip.allow { border-color: #b7ddc4; background: var(--green-soft); color: #14603a; }
 
       /* ---- controls ---- */
       .controls {
         display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-        margin: 1.5rem 0 0.75rem; font-size: 0.82rem; color: var(--muted);
+        margin: 1.6rem 0 0.8rem; font-size: 0.82rem; color: var(--muted);
       }
       button {
-        font: inherit; font-size: 0.82rem; color: var(--text); cursor: pointer;
-        background: var(--panel-2); border: 1px solid var(--line);
-        padding: 0.4rem 0.85rem; border-radius: 8px;
+        font: inherit; font-size: 0.82rem; font-weight: 600; color: var(--text); cursor: pointer;
+        background: var(--panel); border: 1px solid var(--line);
+        padding: 0.45rem 0.9rem; border-radius: 7px;
       }
-      button:hover { border-color: var(--accent); }
+      button:hover { border-color: var(--accent); color: var(--accent); }
       label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
       #error { color: var(--red); }
 
       /* ---- ledger ---- */
       .panel {
         background: var(--panel); border: 1px solid var(--line);
-        border-radius: 12px; overflow: hidden;
+        border-radius: 10px; overflow: hidden;
       }
       table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
       th {
-        text-align: left; padding: 0.7rem 0.85rem; color: var(--faint);
-        font-weight: 600; font-size: 0.72rem; letter-spacing: 0.06em;
+        text-align: left; padding: 0.7rem 0.9rem; color: var(--faint);
+        font-weight: 650; font-size: 0.71rem; letter-spacing: 0.05em;
         text-transform: uppercase; background: var(--panel-2);
         border-bottom: 1px solid var(--line);
       }
       td {
-        padding: 0.8rem 0.85rem; vertical-align: top;
+        padding: 0.85rem 0.9rem; vertical-align: top;
         border-bottom: 1px solid var(--line-soft);
       }
       /* The clock reads as one token; wrapping it mid-timestamp looks broken. */
       td:first-child { white-space: nowrap; color: var(--muted); }
       tbody tr:last-child td { border-bottom: none; }
       /* The row that carries the whole argument: a purchase the gate refused.
-         Left rail rather than a wash, so it reads at a glance on a projector. */
-      tr.blocked, tr.failed { background: rgba(255, 92, 92, 0.045); box-shadow: inset 3px 0 0 var(--red); }
-      tr.captured { background: rgba(46, 204, 113, 0.05); box-shadow: inset 3px 0 0 var(--green); }
+         Left rail rather than a wash, so it reads at a glance on a projector,
+         and a light tint instead of the darker one so text stays crisp. */
+      tr.blocked, tr.failed { background: #fdf6f5; box-shadow: inset 3px 0 0 var(--red); }
+      tr.captured { background: #f5faf7; box-shadow: inset 3px 0 0 var(--green); }
       tr.created { box-shadow: inset 3px 0 0 var(--accent); }
 
       .badge {
-        display: inline-block; padding: 0.18rem 0.5rem; border-radius: 5px;
-        font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+        display: inline-block; padding: 0.2rem 0.55rem; border-radius: 5px;
+        font-size: 0.68rem; font-weight: 700; letter-spacing: 0.03em;
         white-space: nowrap; border: 1px solid transparent;
       }
-      .b-checked { background: rgba(139, 155, 176, 0.14); color: #b9c6d6; border-color: var(--line); }
-      .b-blocked { background: rgba(255, 92, 92, 0.15); color: #ff8f8f; border-color: rgba(255, 92, 92, 0.35); }
-      .b-created { background: rgba(51, 149, 255, 0.14); color: #7fbcff; border-color: rgba(51, 149, 255, 0.32); }
-      .b-captured { background: rgba(46, 204, 113, 0.14); color: #6fdba0; border-color: rgba(46, 204, 113, 0.32); }
-      .b-failed { background: rgba(255, 92, 92, 0.15); color: #ff8f8f; border-color: rgba(255, 92, 92, 0.35); }
+      .b-checked { background: var(--panel-2); color: var(--muted); border-color: var(--line); }
+      .b-blocked { background: var(--red-soft); color: #8f231d; border-color: #eebab5; }
+      .b-created { background: var(--accent-soft); color: #1c4dab; border-color: #c2d7fb; }
+      .b-captured { background: var(--green-soft); color: #14603a; border-color: #b7ddc4; }
+      .b-failed { background: var(--red-soft); color: #8f231d; border-color: #eebab5; }
 
-      code { font-family: var(--mono); font-size: 0.78rem; color: #cbd8e8; }
+      code { font-family: var(--mono); font-size: 0.78rem; color: #364154; }
       .muted { color: var(--faint); }
       .reason { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem; }
       /* `detail` carries two very different things. On a blocked row it is the
@@ -156,13 +163,13 @@
          is signature_mismatch or not_captured, which is an error. Accent by
          default, red only where it genuinely reports a failure. */
       .detail {
-        display: block; color: #7fbcff; font-size: 0.76rem; margin-top: 0.3rem;
+        display: block; color: #1c4dab; font-size: 0.76rem; margin-top: 0.3rem;
         font-family: var(--mono);
       }
-      tr.failed .detail { color: #ffb3b3; }
+      tr.failed .detail { color: var(--red); }
       .amount {
         text-align: right; white-space: nowrap;
-        font-variant-numeric: tabular-nums; font-weight: 600;
+        font-variant-numeric: tabular-nums; font-weight: 650;
       }
       .intent { font-style: italic; color: var(--text); }
       a { color: var(--accent); text-decoration: none; }
