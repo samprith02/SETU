@@ -57,9 +57,12 @@ const BASE_URL = process.env.SETU_BASE_URL || "http://localhost:3000";
 //
 // The numbers are chosen against the campus-store catalog so both outcomes are
 // demonstrable without contrived inputs:
-//   - ₹500 per-transaction cap: admits the phone case (₹399), the USB-C cable
-//     (₹299) and the stationery, blocks the 65W charger (₹1,499) and the power
-//     bank (₹1,299).
+//   - ₹500 per-transaction cap: admits the wired mouse (₹449), the phone case
+//     (₹399), the USB-C cable (₹299) and the stationery; blocks the wireless
+//     mouse (₹749), the 65W charger (₹1,499) and the power bank (₹1,299).
+//     The cap falls between the two mice on purpose — that is what makes the
+//     refusal recoverable with a like-for-like substitute instead of merely
+//     survivable.
 //   - ₹2,000 total budget: several purchases fit, so budget exhaustion is
 //     reachable in a live demo rather than theoretical.
 //   - allowlist omits `audio`, `chargers` and `storage`, so a category refusal
@@ -108,25 +111,45 @@ const DEFAULT_AUDIT_LIMIT = 25;
  * correctly returns nothing rather than suggesting a substitute that would be
  * refused on the next call.
  *
- * ORDER: the blocked product's own category first, cheapest within it, then
- * everything else cheapest-first. Pure cheapest-first was the original rule and
- * it read badly — asked for a ₹749 mouse, the two cheapest permitted products
- * in the whole catalog are a notebook and a pen pack, so the refusal answered
- * "you can't have a mouse" with "have some stationery". Same-category-first
- * answers the question that was actually asked, and degrades on its own: when
- * the refusal was ABOUT the category, nothing shares it, every candidate sorts
- * equal on that key and the ordering falls back to cheapest overall.
+ * ORDER: relevance first, price last. Candidates are ranked by how many tags
+ * they share with the refused product, then by whether they share its category,
+ * then cheapest.
+ *
+ * Price-first was the original rule and it read badly. Asked for a ₹749 mouse,
+ * the cheapest permitted products are a notebook and a pen pack, so the refusal
+ * answered "you can't have a mouse" with "have some stationery" — the gate
+ * changing the subject rather than helping. Category-first was the second
+ * attempt and was still too coarse: "accessories" holds mice, cases, sleeves
+ * and stands, so it answered a mouse with the cheapest accessory, a phone case.
+ *
+ * Shared tags are what actually encode "same kind of thing". The wired mouse
+ * shares three tags with the wireless one (mouse, laptop, usb); the phone case
+ * shares none. So the ₹449 mouse is offered ahead of the ₹399 case — the
+ * substitute list is deliberately NOT in price order, because the cheapest
+ * permitted thing is rarely the thing the customer asked for.
+ *
+ * The ordering degrades on its own. When the refusal was ABOUT the category,
+ * few candidates share tags and none share the category, so both keys flatten
+ * and it falls back to cheapest overall — which is the right answer when
+ * nothing resembling the request is permitted at all.
  */
 function suggestAlternatives(mandate, blockedProduct, limit = 2) {
+  const wantedTags = new Set(blockedProduct.tags);
+  const sharedTags = (product) => product.tags.filter((tag) => wantedTags.has(tag)).length;
   const sameCategory = (product) => (product.category === blockedProduct.category ? 0 : 1);
 
   return mandate.category_allowlist
     .flatMap((category) => searchCatalog({ category, maxPrice: mandate.per_txn_cap }).products)
-    .sort((a, b) => sameCategory(a) - sameCategory(b) || a.price - b.price)
     .filter(
       (candidate) =>
         candidate.id !== blockedProduct.id &&
         check(mandate, candidate.price, candidate.category).approved,
+    )
+    .sort(
+      (a, b) =>
+        sharedTags(b) - sharedTags(a) ||
+        sameCategory(a) - sameCategory(b) ||
+        a.price - b.price,
     )
     .slice(0, limit);
 }

@@ -22,6 +22,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { formatPaise } from "./mandate.js";
+import { getProduct } from "./catalog.js";
 
 const RUNS = 5;
 
@@ -33,6 +34,10 @@ const RUNS = 5;
 // mistaken for a category quibble.
 const BLOCKED_ID = "acc-mouse-wireless";
 const BLOCKED_CATEGORY = "accessories";
+// What "closest match" is measured against. The catalog stocks a ₹449 wired
+// mouse sharing three of these, so a like-for-like substitute exists and the
+// ordering assertion below has something real to bite on.
+const BLOCKED_TAGS = new Set(getProduct(BLOCKED_ID).tags);
 const BLOCKED_RULE = "per_txn_cap_exceeded";
 const REQUEST = "buy me a wireless mouse for the campus desk setup";
 
@@ -125,24 +130,42 @@ for (let run = 1; run <= RUNS; run++) {
       fail(`suggested ${alt.id} at ${formatPaise(alt.price)}, over the per-transaction cap`);
     }
   }
-  // Closest match first: the blocked product's own category ahead of everything
-  // else, cheapest within each group. Note this is deliberately NOT price order
-  // overall — for the mouse, the ₹399 phone case outranks the ₹120 notebook
-  // because it is the substitute that answers the question that was asked.
-  const rank = (a) => [a.category === BLOCKED_CATEGORY ? 0 : 1, a.price];
+  // Closest match first: most shared tags with the refused product, then its
+  // own category, then cheapest. Deliberately NOT price order overall — for the
+  // mouse, the ₹449 wired mouse outranks the ₹399 phone case because it is the
+  // substitute that answers the question that was actually asked. Tags come
+  // from the catalog rather than the payload, so this checks the ordering
+  // against the real product data and not against the server's own claim.
+  const rank = (a) => {
+    const tags = getProduct(a.id)?.tags ?? [];
+    return [
+      -tags.filter((tag) => BLOCKED_TAGS.has(tag)).length,
+      a.category === BLOCKED_CATEGORY ? 0 : 1,
+      a.price,
+    ];
+  };
   for (let i = 1; i < alternatives.length; i++) {
-    const [prevGroup, prevPrice] = rank(alternatives[i - 1]);
-    const [group, price] = rank(alternatives[i]);
-    if (group < prevGroup || (group === prevGroup && price < prevPrice)) {
+    const prev = rank(alternatives[i - 1]);
+    const curr = rank(alternatives[i]);
+    // Lexicographic: the first key they differ on decides. If curr sorts
+    // strictly before prev, the server handed them back out of order.
+    const differing = curr.findIndex((key, k) => key !== prev[k]);
+    if (differing !== -1 && curr[differing] < prev[differing]) {
       fail(`alternatives are out of order: ${alternatives[i - 1].id} before ${alternatives[i].id}`);
     }
   }
-  // The substitute offered first must be in the same category as the refused
-  // product whenever the catalog has one the mandate allows.
-  if (alternatives.some((a) => a.category === BLOCKED_CATEGORY)) {
-    if (alternatives[0].category !== BLOCKED_CATEGORY) {
-      fail(`a ${BLOCKED_CATEGORY} substitute exists but ${alternatives[0].id} was offered first`);
-    }
+  // The substitute offered first must be a genuine like-for-like whenever the
+  // catalog holds one the mandate allows — sharing tags with the refused
+  // product, not merely being the cheapest thing that squeaks under the cap.
+  // This is the assertion that would have caught "answered a mouse with a
+  // phone case", which the ordering did for as long as it ranked on category.
+  const sharesTags = (a) =>
+    (getProduct(a.id)?.tags ?? []).some((tag) => BLOCKED_TAGS.has(tag));
+  if (alternatives.some(sharesTags) && !sharesTags(alternatives[0])) {
+    fail(
+      `a like-for-like substitute exists but ${alternatives[0].id}, which shares ` +
+        `no tags with ${BLOCKED_ID}, was offered first`,
+    );
   }
   console.log(
     `     offered: ${alternatives.map((a) => `${a.id} (${a.price_display})`).join(", ")}`,

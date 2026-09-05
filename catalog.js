@@ -26,7 +26,17 @@ export const productSchema = z.object({
 // Fictional merchant: a campus tech-essentials store.
 // Price spread is deliberate — a Rs 500 mandate cap allows the cables and
 // stationery but blocks the charger and power bank, which is what makes the
-// Day 2 over-limit failure scenario demonstrable without contrived numbers.
+// over-limit failure scenario demonstrable without contrived numbers.
+//
+// The two mice are the load-bearing pair. A refusal is only useful if the agent
+// can recover WITHOUT abandoning what the customer actually asked for, and that
+// requires the catalog to contain a genuine like-for-like substitute: same
+// intent (a mouse), different price bracket (Rs 449 against Rs 749, either side
+// of the Rs 500 cap). Without the cheaper one the gate can only answer "you
+// can't have a mouse" with "have a phone case", which is not a recovery — it is
+// the gate changing the subject. Note the substitute is NOT the cheapest
+// permitted product; that is the point of ranking substitutes by relevance
+// rather than by price (see suggestAlternatives in server.js).
 const PRODUCTS = [
   {
     id: "chg-usbc-65w",
@@ -72,6 +82,15 @@ const PRODUCTS = [
     stock: 18,
     tags: ["mouse", "wireless", "laptop", "usb"],
     description: "2.4GHz wireless mouse with a nano USB receiver and 12-month battery life.",
+  },
+  {
+    id: "acc-mouse-wired",
+    name: "Wired Optical Mouse",
+    price: 44900,
+    category: "accessories",
+    stock: 30,
+    tags: ["mouse", "wired", "laptop", "usb"],
+    description: "1000 DPI wired optical mouse with a 1.5m braided USB-A cable. No battery to run flat.",
   },
   {
     id: "sto-pendrive-64gb",
