@@ -60,18 +60,27 @@ flatten, and the list correctly falls back to cheapest overall.
 
 ## The sequence
 
-Ask the agent, in a Claude Code session with the `setu` MCP server registered:
+Ask the agent, in a Claude Code session with the `setu` MCP server registered —
+in natural language, without naming a product id. The agent is meant to find
+the product itself via `search_catalog`; handing it the id would make this a
+demo of the agent clicking a button, not of it acting on a request:
 
-> Buy me a wireless mouse for the campus desk setup (product id
-> `acc-mouse-wireless`). If the mandate blocks it, buy the first alternative it
-> suggests instead, then show me the audit trail.
+> I want to buy a wireless mouse for my desk setup. Check what my spending
+> mandate allows first. If this one doesn't fit the limit, don't just give up —
+> buy whatever it suggests as the closest match instead. Then show me the full
+> audit trail of what you did.
 
-Say "the first alternative", not "the cheapest". Verified live: asking for the
-cheapest makes the agent re-rank the suggestions itself and buy the ₹120.00
-notebook over the ₹449.00 wired mouse — correct obedience to the instruction,
-but it throws away the closest-match ordering the server just did and makes the
-demo contradict this document. It also throws away the sale the merchant would
-otherwise have kept.
+A plain `search_catalog` query for "wireless mouse" returns exactly one
+product — the wired mouse's tags say `wired`, not `wireless` — so this is as
+deterministic in practice as naming the id outright (verified directly against
+`searchCatalog()`).
+
+Say "whatever it suggests as the closest match", not "the cheapest". Verified
+live: asking for the cheapest makes the agent re-rank the suggestions itself
+and buy the ₹120.00 notebook over the ₹449.00 wired mouse — correct obedience
+to the instruction, but it throws away the closest-match ordering the server
+just did and makes the demo contradict this document. It also throws away the
+sale the merchant would otherwise have kept.
 
 **This is a scripted demonstration of the mandate/audit mechanism, not a claim
 that auto-substituting is correct behavior.** The instruction above tells the
