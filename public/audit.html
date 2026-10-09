@@ -1,450 +1,1037 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Setu — Audit Trail</title>
+    <meta name="description" content="Setu Agent Commerce Gateway — live audit trail for every money decision made by the AI agent on Razorpay test-mode rails." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
     <style>
-      /* Light, plain, and legible — a ledger a merchant's ops team would
-         actually trust, not a dashboard trying to look impressive. One accent
-         color, real borders instead of glow, and status carried by a left
-         rail + badge rather than a wash of color across the row. */
+      /* ======================================================================
+         Design tokens — dual-theme (dark default, light opt-in)
+         ====================================================================== */
       :root {
-        --bg: #f5f6f8;
-        --panel: #ffffff;
-        --panel-2: #fafbfc;
-        --line: #e3e6ea;
-        --line-soft: #edeff2;
-        --text: #1a1d24;
-        --muted: #5b6472;
-        --faint: #8991a0;
-        --accent: #2f6fed; /* Razorpay-adjacent blue */
-        --accent-soft: #eef3fe;
-        --green: #1a7f4b;
-        --green-soft: #eaf7f0;
-        --amber: #b5690a;
-        --amber-soft: #fdf3e6;
-        --red: #c0261f;
-        --red-soft: #fceeed;
-        --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-        --sans: -apple-system, "Segoe UI", system-ui, Roboto, Arial, sans-serif;
+        /* surfaces */
+        --bg:          #0d0f14;
+        --surface:     #13161f;
+        --surface-2:   #1a1e2a;
+        --surface-3:   #222736;
+        --border:      #2a2f3d;
+        --border-soft: #1f2330;
+
+        /* text */
+        --text:        #e8eaf0;
+        --text-2:      #9aa0b4;
+        --text-3:      #5c6278;
+
+        /* brand */
+        --accent:      #4f7ef8;
+        --accent-glow: rgba(79,126,248,.18);
+        --accent-dim:  #1d2a4a;
+
+        /* status */
+        --green:       #34d399;
+        --green-dim:   rgba(52,211,153,.12);
+        --green-border:rgba(52,211,153,.3);
+        --amber:       #fbbf24;
+        --amber-dim:   rgba(251,191,36,.1);
+        --amber-border:rgba(251,191,36,.28);
+        --red:         #f87171;
+        --red-dim:     rgba(248,113,113,.1);
+        --red-border:  rgba(248,113,113,.28);
+        --blue-dim:    rgba(79,126,248,.1);
+        --blue-border: rgba(79,126,248,.28);
+
+        /* type */
+        --font-sans: "Inter", -apple-system, "Segoe UI", sans-serif;
+        --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+
+        /* motion */
+        --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
       }
-      * { box-sizing: border-box; }
+
+      [data-theme="light"] {
+        --bg:          #f4f5f9;
+        --surface:     #ffffff;
+        --surface-2:   #f8f9fc;
+        --surface-3:   #eef0f6;
+        --border:      #dde0ea;
+        --border-soft: #eaecf3;
+        --text:        #1a1d2b;
+        --text-2:      #5a6078;
+        --text-3:      #9aa0b4;
+        --accent:      #2f5fd4;
+        --accent-glow: rgba(47,95,212,.12);
+        --accent-dim:  #e8eeff;
+        --green:       #16a34a;
+        --green-dim:   rgba(22,163,74,.08);
+        --green-border:rgba(22,163,74,.25);
+        --amber:       #b45309;
+        --amber-dim:   rgba(180,83,9,.07);
+        --amber-border:rgba(180,83,9,.22);
+        --red:         #dc2626;
+        --red-dim:     rgba(220,38,38,.07);
+        --red-border:  rgba(220,38,38,.22);
+        --blue-dim:    rgba(47,95,212,.07);
+        --blue-border: rgba(47,95,212,.22);
+      }
+
+      /* ======================================================================
+         Reset & base
+         ====================================================================== */
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html { scroll-behavior: smooth; }
       body {
-        margin: 0;
         background: var(--bg);
         color: var(--text);
-        font-family: var(--sans);
+        font-family: var(--font-sans);
         font-size: 14px;
-        line-height: 1.5;
+        line-height: 1.6;
         -webkit-font-smoothing: antialiased;
+        min-height: 100vh;
       }
-      .wrap { max-width: 1180px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
-
-      /* ---- masthead ---- */
-      header { display: flex; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
-      .brand { display: flex; align-items: center; gap: 0.7rem; }
-      .mark {
-        width: 34px; height: 34px; border-radius: 8px;
-        background: var(--accent);
-        display: grid; place-items: center;
-        font-weight: 700; font-size: 1rem; color: #fff;
-      }
-      .brand h1 { margin: 0; font-size: 1.2rem; letter-spacing: -0.01em; font-weight: 650; color: var(--text); }
-      .brand p { margin: 0; color: var(--faint); font-size: 0.78rem; }
-      .spacer { flex: 1; }
-      .live {
-        display: inline-flex; align-items: center; gap: 0.45rem;
-        color: var(--muted); font-size: 0.78rem;
-        background: var(--panel); border: 1px solid var(--line);
-        padding: 0.35rem 0.75rem; border-radius: 999px;
-      }
-      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-      .dot.on { animation: pulse 2s ease-in-out infinite; }
-      .dot.off { background: var(--faint); animation: none; }
-      .dot.err { background: var(--red); animation: none; }
-      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-      @media (prefers-reduced-motion: reduce) { .dot.on { animation: none; } }
-
-      .lede {
-        margin: 1.1rem 0 0; color: var(--muted); max-width: 64ch; font-size: 0.9rem;
-      }
-      .lede code { color: var(--text); font-family: var(--mono); font-size: 0.82em; background: var(--panel-2); padding: 0.1em 0.35em; border-radius: 4px; }
-
-      /* ---- stat tiles ---- */
-      .tiles {
-        display: grid; gap: 0.85rem; margin: 1.5rem 0 0.5rem;
-        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-      }
-      .tile {
-        background: var(--panel); border: 1px solid var(--line);
-        border-radius: 10px; padding: 0.95rem 1.1rem;
-      }
-      .tile .v {
-        display: block; font-size: 1.6rem; font-weight: 650; letter-spacing: -0.02em;
-        font-variant-numeric: tabular-nums; color: var(--text);
-      }
-      .tile .k { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.2rem; font-weight: 550; }
-      .tile .note { display: block; color: var(--faint); font-size: 0.72rem; margin-top: 0.35rem; }
-      .tile.hero { border-color: #f0ceac; background: var(--amber-soft); }
-      .tile.hero .v { color: var(--amber); }
-      .tile.money { border-color: #bfe3cd; background: var(--green-soft); }
-      .tile.money .v { color: var(--green); }
-
-      /* ---- rules fired ---- */
-      .rules { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 1.2rem 0 0; align-items: center; }
-      .rules .label { color: var(--faint); font-size: 0.76rem; margin-right: 0.2rem; }
-      .chip {
-        font-family: var(--mono); font-size: 0.74rem;
-        background: var(--panel); border: 1px solid var(--line);
-        color: var(--muted); padding: 0.2rem 0.6rem; border-radius: 6px;
-      }
-      .chip b { color: var(--text); font-weight: 700; }
-      .chip.deny { border-color: #eebab5; background: var(--red-soft); color: #8f231d; }
-      .chip.allow { border-color: #b7ddc4; background: var(--green-soft); color: #14603a; }
-
-      /* ---- controls ---- */
-      .controls {
-        display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-        margin: 1.6rem 0 0.8rem; font-size: 0.82rem; color: var(--muted);
-      }
-      button {
-        font: inherit; font-size: 0.82rem; font-weight: 600; color: var(--text); cursor: pointer;
-        background: var(--panel); border: 1px solid var(--line);
-        padding: 0.45rem 0.9rem; border-radius: 7px;
-      }
-      button:hover { border-color: var(--accent); color: var(--accent); }
-      label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
-      #error { color: var(--red); }
-
-      /* ---- ledger ---- */
-      .panel {
-        background: var(--panel); border: 1px solid var(--line);
-        border-radius: 10px; overflow: hidden;
-      }
-      table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
-      th {
-        text-align: left; padding: 0.7rem 0.9rem; color: var(--faint);
-        font-weight: 650; font-size: 0.71rem; letter-spacing: 0.05em;
-        text-transform: uppercase; background: var(--panel-2);
-        border-bottom: 1px solid var(--line);
-      }
-      td {
-        padding: 0.85rem 0.9rem; vertical-align: top;
-        border-bottom: 1px solid var(--line-soft);
-      }
-      /* The clock reads as one token; wrapping it mid-timestamp looks broken. */
-      td:first-child { white-space: nowrap; color: var(--muted); }
-      tbody tr:last-child td { border-bottom: none; }
-      /* The row that carries the whole argument: a purchase the gate refused.
-         Left rail rather than a wash, so it reads at a glance on a projector,
-         and a light tint instead of the darker one so text stays crisp. */
-      tr.blocked, tr.failed { background: #fdf6f5; box-shadow: inset 3px 0 0 var(--red); }
-      tr.captured { background: #f5faf7; box-shadow: inset 3px 0 0 var(--green); }
-      tr.created { box-shadow: inset 3px 0 0 var(--accent); }
-
-      .badge {
-        display: inline-block; padding: 0.2rem 0.55rem; border-radius: 5px;
-        font-size: 0.68rem; font-weight: 700; letter-spacing: 0.03em;
-        white-space: nowrap; border: 1px solid transparent;
-      }
-      .b-checked { background: var(--panel-2); color: var(--muted); border-color: var(--line); }
-      .b-blocked { background: var(--red-soft); color: #8f231d; border-color: #eebab5; }
-      .b-created { background: var(--accent-soft); color: #1c4dab; border-color: #c2d7fb; }
-      .b-captured { background: var(--green-soft); color: #14603a; border-color: #b7ddc4; }
-      .b-failed { background: var(--red-soft); color: #8f231d; border-color: #eebab5; }
-
-      code { font-family: var(--mono); font-size: 0.78rem; color: #364154; }
-      .muted { color: var(--faint); }
-      .reason { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 0.25rem; }
-      /* `detail` carries two very different things. On a blocked row it is the
-         list of permitted substitutes — the constructive half of the refusal,
-         and the wrong thing to paint as another error. On a failed payment it
-         is signature_mismatch or not_captured, which is an error. Accent by
-         default, red only where it genuinely reports a failure. */
-      .detail {
-        display: block; color: #1c4dab; font-size: 0.76rem; margin-top: 0.3rem;
-        font-family: var(--mono);
-      }
-      tr.failed .detail { color: var(--red); }
-      .amount {
-        text-align: right; white-space: nowrap;
-        font-variant-numeric: tabular-nums; font-weight: 650;
-      }
-      .intent { font-style: italic; color: var(--text); }
       a { color: var(--accent); text-decoration: none; }
       a:hover { text-decoration: underline; }
-      .empty { text-align: center; padding: 3rem 1rem; color: var(--faint); }
+      code, .mono {
+        font-family: var(--font-mono);
+        font-size: 0.8em;
+      }
 
-      footer { margin-top: 1.25rem; color: var(--faint); font-size: 0.76rem; }
-      @media (max-width: 720px) {
-        th:nth-child(3), td:nth-child(3) { display: none; }
+      /* ======================================================================
+         Layout shell
+         ====================================================================== */
+      .shell {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 1.75rem 1.5rem 5rem;
+      }
+
+      /* ======================================================================
+         Header
+         ====================================================================== */
+      header {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 1.5rem;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      .logo {
+        width: 38px; height: 38px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #4f7ef8 0%, #7c5fe8 100%);
+        display: grid;
+        place-items: center;
+        font-weight: 700;
+        font-size: 1.05rem;
+        color: #fff;
+        flex-shrink: 0;
+        box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 4px 16px rgba(79,126,248,.35);
+      }
+      .brand-text h1 {
+        font-size: 1.15rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        color: var(--text);
+      }
+      .brand-text p {
+        font-size: 0.75rem;
+        color: var(--text-3);
+        font-weight: 500;
+      }
+      .spacer { flex: 1; }
+      .header-actions { display: flex; align-items: center; gap: 0.6rem; }
+
+      /* Status pill */
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.35rem 0.85rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text-2);
+        transition: all .3s;
+      }
+      .status-dot {
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        flex-shrink: 0;
+      }
+      .status-dot.live { animation: pulse 2.2s ease-in-out infinite; }
+      .status-dot.err  { background: var(--red); }
+      .status-dot.off  { background: var(--text-3); }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52,211,153,.5); }
+        50%       { opacity: .5; box-shadow: 0 0 0 4px rgba(52,211,153,0); }
+      }
+      @media (prefers-reduced-motion: reduce) { .status-dot.live { animation: none; } }
+
+      /* Icon button */
+      .icon-btn {
+        display: grid; place-items: center;
+        width: 34px; height: 34px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        cursor: pointer;
+        color: var(--text-2);
+        transition: border-color .2s, color .2s, background .2s;
+        font-size: 1.1rem;
+      }
+      .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+      /* ======================================================================
+         Lede
+         ====================================================================== */
+      .lede {
+        font-size: 0.875rem;
+        color: var(--text-2);
+        max-width: 68ch;
+        margin-bottom: 1.5rem;
+      }
+      .lede code {
+        color: var(--text);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        padding: 0.1em 0.4em;
+        border-radius: 5px;
+      }
+
+      /* ======================================================================
+         Stat tiles
+         ====================================================================== */
+      .tiles {
+        display: grid;
+        gap: 0.85rem;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        margin-bottom: 1rem;
+      }
+      .tile {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 1.1rem 1.2rem;
+        position: relative;
+        overflow: hidden;
+        transition: transform .2s var(--ease-out), box-shadow .2s;
+        animation: tile-in .4s var(--ease-out) both;
+      }
+      .tile:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0,0,0,.25);
+      }
+      @keyframes tile-in {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      .tile::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 2px;
+        border-radius: 14px 14px 0 0;
+        background: var(--tile-accent, var(--border));
+      }
+      .tile.t-money  { --tile-accent: var(--green); }
+      .tile.t-block  { --tile-accent: var(--amber); }
+      .tile.t-count  { --tile-accent: var(--accent); }
+      .tile.t-budget { --tile-accent: linear-gradient(90deg, var(--green) var(--pct, 0%), var(--border) var(--pct, 0%)); }
+
+      .tile .val {
+        font-size: 1.75rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        font-variant-numeric: tabular-nums;
+        color: var(--text);
+        display: block;
+        margin-bottom: 0.2rem;
+        line-height: 1.1;
+      }
+      .tile.t-money .val  { color: var(--green); }
+      .tile.t-block .val  { color: var(--amber); }
+      .tile.t-count .val  { color: var(--accent); }
+      .tile .label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--text-2);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .tile .note {
+        font-size: 0.72rem;
+        color: var(--text-3);
+        margin-top: 0.3rem;
+        display: block;
+      }
+
+      /* Budget gauge tile */
+      .budget-gauge {
+        margin-top: 0.6rem;
+        position: relative;
+      }
+      .gauge-track {
+        height: 6px;
+        border-radius: 999px;
+        background: var(--surface-3);
+        overflow: hidden;
+      }
+      .gauge-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--green), #60e8b0);
+        transition: width .6s var(--ease-out);
+        width: 0%;
+      }
+      .gauge-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.68rem;
+        color: var(--text-3);
+        margin-top: 0.3rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ======================================================================
+         Mandate + rules bar
+         ====================================================================== */
+      .mandate-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+        margin-bottom: 1.4rem;
+        padding: 0.7rem 0.9rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        font-size: 0.78rem;
+      }
+      .mandate-bar .mb-label {
+        color: var(--text-3);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        font-size: 0.7rem;
+        margin-right: 0.25rem;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.18rem 0.55rem;
+        border-radius: 6px;
+        font-size: 0.73rem;
+        font-weight: 600;
+        font-family: var(--font-mono);
+        border: 1px solid;
+        white-space: nowrap;
+      }
+      .chip-allow  { background: var(--green-dim); color: var(--green); border-color: var(--green-border); }
+      .chip-deny   { background: var(--red-dim);   color: var(--red);   border-color: var(--red-border); }
+      .chip-neutral{ background: var(--blue-dim);  color: var(--accent);border-color: var(--blue-border); }
+      .chip-amber  { background: var(--amber-dim); color: var(--amber); border-color: var(--amber-border); }
+
+      /* ======================================================================
+         Merchant tabs
+         ====================================================================== */
+      .tabs {
+        display: flex;
+        gap: 0.3rem;
+        margin-bottom: 1.2rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.3rem;
+        width: fit-content;
+      }
+      .tab-btn {
+        padding: 0.45rem 1rem;
+        border-radius: 7px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        border: none;
+        cursor: pointer;
+        background: transparent;
+        color: var(--text-2);
+        transition: background .15s, color .15s;
+      }
+      .tab-btn.active {
+        background: var(--accent);
+        color: #fff;
+        box-shadow: 0 2px 8px var(--accent-glow);
+      }
+      .tab-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
+
+      /* ======================================================================
+         Controls toolbar
+         ====================================================================== */
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.9rem;
+      }
+      .btn {
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 0.45rem 0.9rem;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        transition: border-color .15s, color .15s, background .15s;
+      }
+      .btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      .btn-primary:hover { opacity: .85; color: #fff; }
+      .toggle-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.78rem;
+        color: var(--text-2);
+        cursor: pointer;
+      }
+      .toggle-label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
+      .err-msg { color: var(--red); font-size: 0.78rem; }
+
+      /* ======================================================================
+         Catalog grid (merchant 2 view)
+         ====================================================================== */
+      .catalog-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 0.85rem;
+      }
+      .product-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        transition: transform .2s var(--ease-out), box-shadow .2s;
+        animation: tile-in .35s var(--ease-out) both;
+      }
+      .product-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(0,0,0,.2);
+      }
+      .pc-name { font-weight: 700; font-size: 0.9rem; color: var(--text); }
+      .pc-desc { font-size: 0.78rem; color: var(--text-2); line-height: 1.5; }
+      .pc-foot { display: flex; justify-content: space-between; align-items: center; margin-top: auto; padding-top: 0.5rem; }
+      .pc-price { font-weight: 700; font-size: 1rem; color: var(--green); font-variant-numeric: tabular-nums; }
+      .pc-stock { font-size: 0.72rem; color: var(--text-3); }
+      .pc-cat {
+        font-size: 0.68rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--accent);
+        background: var(--accent-dim);
+        border: 1px solid var(--blue-border);
+        border-radius: 4px;
+        padding: 0.1em 0.45em;
+        width: fit-content;
+      }
+
+      /* ======================================================================
+         Audit table
+         ====================================================================== */
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .tbl-wrap { overflow-x: auto; }
+      table { border-collapse: collapse; width: 100%; font-size: 0.84rem; }
+      thead { position: sticky; top: 0; z-index: 1; }
+      th {
+        text-align: left;
+        padding: 0.8rem 1rem;
+        color: var(--text-3);
+        font-weight: 700;
+        font-size: 0.69rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      td {
+        padding: 0.9rem 1rem;
+        vertical-align: top;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      tbody tr:last-child td { border-bottom: none; }
+      td:first-child { white-space: nowrap; color: var(--text-2); font-size: 0.8rem; }
+
+      /* Row status strips */
+      tbody tr { transition: background .15s; position: relative; }
+      tbody tr::before {
+        content: "";
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        width: 3px;
+      }
+      tr.row-captured::before { background: var(--green); }
+      tr.row-blocked::before, tr.row-failed::before { background: var(--red); }
+      tr.row-created::before { background: var(--accent); }
+      tr.row-captured { background: rgba(52,211,153,.04); }
+      tr.row-blocked, tr.row-failed { background: rgba(248,113,113,.04); }
+      tr.row-created  { background: rgba(79,126,248,.04); }
+      tbody tr:hover { background: var(--surface-2) !important; }
+
+      /* Badge */
+      .badge {
+        display: inline-block;
+        padding: 0.22rem 0.6rem;
+        border-radius: 6px;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .b-checked  { background: var(--surface-3); color: var(--text-2); border-color: var(--border); }
+      .b-blocked  { background: var(--red-dim);   color: var(--red);    border-color: var(--red-border); }
+      .b-created  { background: var(--blue-dim);  color: var(--accent); border-color: var(--blue-border); }
+      .b-captured { background: var(--green-dim); color: var(--green);  border-color: var(--green-border); }
+      .b-failed   { background: var(--red-dim);   color: var(--red);    border-color: var(--red-border); }
+
+      .td-intent  { font-style: italic; color: var(--text); }
+      .td-muted   { color: var(--text-3); }
+      .td-sub     { display: block; font-size: 0.75rem; color: var(--text-2); margin-top: 0.2rem; font-family: var(--font-mono); }
+      .td-detail  { display: block; font-size: 0.73rem; color: var(--accent); margin-top: 0.25rem; font-family: var(--font-mono); }
+      tr.row-failed .td-detail { color: var(--red); }
+      .td-amount  { text-align: right; white-space: nowrap; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+
+      .empty-state {
+        text-align: center;
+        padding: 4rem 1rem;
+        color: var(--text-3);
+        font-size: 0.875rem;
+      }
+      .empty-state .emoji { font-size: 2.5rem; display: block; margin-bottom: 0.75rem; }
+
+      /* ======================================================================
+         Upsell sidebar / inline row expansion (simplified inline)
+         ====================================================================== */
+      .upsell-row td {
+        padding: 0.5rem 1rem 0.75rem;
+        background: var(--surface-2) !important;
+      }
+      .upsell-row::before { display: none; }
+      .upsell-inner { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+      .upsell-label { font-size: 0.72rem; color: var(--text-3); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+      .upsell-chip {
+        display: inline-flex; flex-direction: column;
+        padding: 0.3rem 0.7rem;
+        border-radius: 7px;
+        background: var(--surface-3);
+        border: 1px solid var(--border);
+        font-size: 0.73rem;
+        color: var(--text);
+        gap: 0.1rem;
+      }
+      .upsell-chip strong { font-weight: 700; color: var(--text); font-size: 0.75rem; }
+      .upsell-chip span { color: var(--green); font-weight: 600; font-size: 0.7rem; }
+
+      /* ======================================================================
+         Footer
+         ====================================================================== */
+      footer {
+        margin-top: 1.5rem;
+        font-size: 0.74rem;
+        color: var(--text-3);
+        border-top: 1px solid var(--border-soft);
+        padding-top: 1rem;
+      }
+
+      /* ======================================================================
+         Responsive
+         ====================================================================== */
+      @media (max-width: 768px) {
+        th:nth-child(3), td:nth-child(3),
+        th:nth-child(5), td:nth-child(5) { display: none; }
+        .shell { padding: 1rem 1rem 4rem; }
       }
     </style>
   </head>
   <body>
-    <div class="wrap">
+    <div class="shell">
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Header -->
+      <!-- ------------------------------------------------------------------ -->
       <header>
         <div class="brand">
-          <div class="mark">से</div>
-          <div>
+          <div class="logo">से</div>
+          <div class="brand-text">
             <h1>Setu — audit trail</h1>
             <p>agent commerce gateway · razorpay test mode</p>
           </div>
         </div>
         <div class="spacer"></div>
-        <span class="live"><span class="dot on" id="dot"></span><span id="updated">connecting…</span></span>
+        <div class="header-actions">
+          <div class="status-pill" id="status-pill">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">connecting…</span>
+          </div>
+          <button class="icon-btn" id="theme-btn" title="Toggle light/dark mode" aria-label="Toggle theme">🌙</button>
+        </div>
       </header>
 
       <p class="lede">
         Every money decision the agent made, in the order it made them. Read live from
-        <code>GET /audit</code> — the same ledger the <code>get_audit_log</code> MCP tool
-        serves back to the agent. Nothing on this page can write to it.
+        <code>GET /audit</code> — the same ledger <code>get_audit_log</code> serves back to the agent.
+        Nothing on this page can write to it.
       </p>
 
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Stat tiles -->
+      <!-- ------------------------------------------------------------------ -->
       <div class="tiles" id="tiles"></div>
-      <div class="rules" id="rules"></div>
 
-      <div class="controls">
-        <button id="refresh">Refresh</button>
-        <label><input type="checkbox" id="auto" checked /> auto-refresh (3s)</label>
-        <span id="error"></span>
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Mandate / rules bar -->
+      <!-- ------------------------------------------------------------------ -->
+      <div class="mandate-bar" id="mandate-bar">
+        <span class="mb-label">Mandate rules fired</span>
+        <span id="mandate-chips"><span style="color:var(--text-3);font-size:0.75rem">loading…</span></span>
       </div>
 
-      <div class="panel">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Status</th>
-              <th>Stated intent</th>
-              <th class="amount">Amount</th>
-              <th>Mandate decision</th>
-              <th>Order</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Merchant tabs -->
+      <!-- ------------------------------------------------------------------ -->
+      <div class="tabs">
+        <button class="tab-btn active" id="tab-audit" onclick="switchTab('audit')">📋 Audit trail</button>
+        <button class="tab-btn" id="tab-study" onclick="switchTab('study')">📚 Study store catalog</button>
+      </div>
+
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Controls (audit tab) -->
+      <!-- ------------------------------------------------------------------ -->
+      <div class="toolbar" id="toolbar-audit">
+        <button class="btn btn-primary" id="refresh-btn">↺ Refresh now</button>
+        <label class="toggle-label">
+          <input type="checkbox" id="auto-chk" checked />
+          Auto-refresh (3 s)
+        </label>
+        <span class="err-msg" id="err-msg"></span>
+      </div>
+
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Audit table -->
+      <!-- ------------------------------------------------------------------ -->
+      <div id="view-audit">
+        <div class="panel">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Status</th>
+                  <th>Stated intent</th>
+                  <th style="text-align:right">Amount</th>
+                  <th>Mandate decision</th>
+                  <th>Order / Payment</th>
+                </tr>
+              </thead>
+              <tbody id="audit-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ------------------------------------------------------------------ -->
+      <!-- Study store view (hidden initially) -->
+      <!-- ------------------------------------------------------------------ -->
+      <div id="view-study" style="display:none">
+        <div class="toolbar">
+          <button class="btn btn-primary" id="study-refresh-btn">↺ Refresh catalog</button>
+          <span id="study-err" class="err-msg"></span>
+        </div>
+        <div class="catalog-grid" id="study-grid"></div>
       </div>
 
       <footer>
-        Amounts are held as integer paise and formatted for display only. A blocked row has
-        no order id because Razorpay was never contacted.
+        Amounts are held as integer paise; formatted to rupees for display only. &middot;
+        A blocked row has no order id — Razorpay was never contacted. &middot;
+        Upsell suggestions shown under captured rows are read from <code>GET /upsell/:id</code>.
       </footer>
     </div>
 
     <script>
-      // status -> [row class, badge class, label]. The vocabulary is audit.js's
-      // STATUS enum; this map only decides how each one looks.
-      const LOOK = {
-        mandate_checked: ["", "b-checked", "CHECKED"],
-        purchase_blocked: ["blocked", "b-blocked", "BLOCKED"],
-        order_created: ["created", "b-created", "ORDER CREATED"],
-        payment_captured: ["captured", "b-captured", "CAPTURED"],
-        payment_failed: ["failed", "b-failed", "FAILED"],
-      };
+    "use strict";
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+    const $ = (id) => document.getElementById(id);
 
-      const rowsEl = document.getElementById("rows");
-      const tilesEl = document.getElementById("tiles");
-      const rulesEl = document.getElementById("rules");
-      const errorEl = document.getElementById("error");
-      const updatedEl = document.getElementById("updated");
-      const dotEl = document.getElementById("dot");
+    const RUPEE = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const rupees = (paise) => "₹" + RUPEE.format(paise / 100);
 
-      // Paise -> rupees, for display only. Every figure underneath stays an
-      // integer count of paise; this is the one place it becomes a decimal.
-      // Indian digit grouping, matching mandate.js's formatPaise — the server's
-      // own strings appear on this same page, and ₹1,499.00 next to ₹1499.00
-      // reads as two different numbers.
-      const RUPEE_FORMAT = new Intl.NumberFormat("en-IN", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
-      const rupees = (paise) => "₹" + RUPEE_FORMAT.format(paise / 100);
+    const el = (tag, className) => {
+      const n = document.createElement(tag);
+      if (className) n.className = className;
+      return n;
+    };
+    const txt = (tag, text, className) => {
+      const n = el(tag, className);
+      n.textContent = text;
+      return n;
+    };
 
-      const el = (tag, text, className) => {
-        const node = document.createElement(tag);
-        // textContent, never innerHTML: `intent` is free text written by the
-        // agent, and an audit view must render what was recorded, not run it.
-        if (text !== undefined && text !== null) node.textContent = text;
-        if (className) node.className = className;
-        return node;
-      };
+    // =========================================================================
+    // Theme toggle
+    // =========================================================================
+    const html = document.documentElement;
+    const themeBtn = $("theme-btn");
+    const savedTheme = localStorage.getItem("setu-theme") || "dark";
+    html.dataset.theme = savedTheme;
+    themeBtn.textContent = savedTheme === "dark" ? "☀️" : "🌙";
+    themeBtn.addEventListener("click", () => {
+      const next = html.dataset.theme === "dark" ? "light" : "dark";
+      html.dataset.theme = next;
+      localStorage.setItem("setu-theme", next);
+      themeBtn.textContent = next === "dark" ? "☀️" : "🌙";
+    });
 
-      function tile(value, label, note, className) {
-        const box = el("div", null, "tile" + (className ? " " + className : ""));
-        box.append(el("span", value, "v"), el("span", label, "k"));
-        if (note) box.append(el("span", note, "note"));
-        return box;
+    // =========================================================================
+    // Tab switching
+    // =========================================================================
+    let currentTab = "audit";
+    function switchTab(tab) {
+      currentTab = tab;
+      $("tab-audit").classList.toggle("active", tab === "audit");
+      $("tab-study").classList.toggle("active", tab === "study");
+      $("view-audit").style.display = tab === "audit" ? "" : "none";
+      $("view-study").style.display = tab === "study" ? "" : "none";
+      $("toolbar-audit").style.display = tab === "audit" ? "" : "none";
+      if (tab === "study") loadStudyCatalog();
+    }
+
+    // =========================================================================
+    // Stat tiles
+    // =========================================================================
+    function renderTiles(data) {
+      const counts = {};
+      let blockedPaise = 0;
+      for (const e of data.entries) {
+        counts[e.status] = (counts[e.status] || 0) + 1;
+        if (e.status === "purchase_blocked" && e.amount != null) blockedPaise += e.amount;
       }
 
-      /**
-       * The headline figures.
-       *
-       * `blocked` is the one worth putting on a slide: the rupee total the
-       * mandate refused BEFORE any Razorpay order existed. It is summed from
-       * the ledger rather than tracked separately, so it cannot disagree with
-       * the rows underneath it.
-       *
-       * Note what is deliberately absent: the mandate's own cap and budget.
-       * Those live in the MCP process and this one holds no copy — showing a
-       * figure here that no entry refers to would be inventing authority on a
-       * page whose entire job is to be trustworthy about it.
-       */
-      function renderTiles(data) {
-        const counts = {};
-        let blockedPaise = 0;
-        for (const entry of data.entries) {
-          counts[entry.status] = (counts[entry.status] || 0) + 1;
-          if (entry.status === "purchase_blocked" && entry.amount !== null) {
-            blockedPaise += entry.amount;
-          }
-        }
-        tilesEl.replaceChildren(
-          tile(
-            data.total_captured_display,
-            "captured",
-            "money that actually moved",
-            "money",
-          ),
-          tile(
-            rupees(blockedPaise),
-            "blocked by the mandate",
-            "never reached Razorpay",
-            "hero",
-          ),
-          tile(String(data.count), "decisions on the ledger", "checks, blocks, orders, captures"),
-          tile(
-            String(counts.order_created || 0),
-            "orders created",
-            (counts.payment_failed || 0) + " payment(s) failed",
-          ),
-        );
+      const mandate = data.mandate;
+      const spent = mandate ? mandate.spent : 0;
+      const max = mandate ? mandate.max_amount : 1;
+      const pct = Math.round(Math.min(100, (spent / max) * 100));
+
+      const tiles = [
+        makeTile(data.total_captured_display, "total captured", "money that moved", "t-money"),
+        makeTile(rupees(blockedPaise), "blocked by mandate", "never reached Razorpay", "t-block"),
+        makeTile(String(data.count), "ledger decisions", `${counts.order_created || 0} orders · ${counts.payment_failed || 0} failed`, "t-count"),
+        makeBudgetTile(mandate, pct),
+      ];
+
+      $("tiles").replaceChildren(...tiles);
+    }
+
+    function makeTile(value, label, note, cls) {
+      const t = el("div", "tile " + (cls || ""));
+      t.append(txt("span", value, "val"), txt("span", label, "label"));
+      if (note) t.append(txt("span", note, "note"));
+      return t;
+    }
+
+    function makeBudgetTile(mandate, pct) {
+      const t = el("div", "tile");
+      t.style.setProperty("--pct", pct + "%");
+
+      const spending = mandate
+        ? `${rupees(mandate.spent)} of ${rupees(mandate.max_amount)}`
+        : "—";
+      const remaining = mandate ? rupees(mandate.max_amount - mandate.spent) + " left" : "";
+
+      t.append(txt("span", spending, "val"));
+      t.append(txt("span", "mandate budget", "label"));
+
+      const gauge = el("div", "budget-gauge");
+      const track = el("div", "gauge-track");
+      const fill  = el("div", "gauge-fill");
+      fill.style.width = pct + "%";
+      if (pct > 80) fill.style.background = "linear-gradient(90deg, var(--amber), #fde68a)";
+      track.append(fill);
+      gauge.append(track);
+
+      const labels = el("div", "gauge-labels");
+      labels.append(txt("span", "₹0"), txt("span", remaining));
+      gauge.append(labels);
+      t.append(gauge);
+
+      if (mandate) {
+        t.append(txt("span", `cap ₹${mandate.per_txn_cap / 100}/txn · expires soon`, "note"));
+      }
+      return t;
+    }
+
+    // =========================================================================
+    // Mandate chip bar
+    // =========================================================================
+    function renderMandateBar(data) {
+      const fired = new Map();
+      for (const e of data.entries) {
+        if (!e.mandate) continue;
+        const k = e.mandate.code;
+        fired.set(k, (fired.get(k) || 0) + 1);
       }
 
-      /**
-       * Which mandate rules actually fired, and how often. This is the
-       * "explainable" claim made countable — a judge can see at a glance that
-       * refusals carry a named rule rather than a generic denial.
-       */
-      function renderRules(data) {
-        const fired = new Map();
-        for (const entry of data.entries) {
-          if (!entry.mandate) continue;
-          const key = entry.mandate.code;
-          fired.set(key, (fired.get(key) || 0) + 1);
+      const container = $("mandate-chips");
+      if (fired.size === 0) {
+        container.replaceChildren(txt("span", "none yet", "td-muted"));
+        return;
+      }
+      const nodes = [];
+      for (const [code, n] of [...fired].sort((a, b) => b[1] - a[1])) {
+        const cls = code === "approved" ? "chip chip-allow" : "chip chip-deny";
+        const c = el("span", cls);
+        c.append(document.createTextNode(code + " "));
+        c.append(txt("b", "×" + n));
+        nodes.push(c);
+      }
+      container.replaceChildren(...nodes);
+    }
+
+    // =========================================================================
+    // Audit table rows
+    // =========================================================================
+    const STATUS_LOOK = {
+      mandate_checked:  ["",            "b-checked",  "CHECKED"],
+      purchase_blocked: ["row-blocked",  "b-blocked",  "BLOCKED"],
+      order_created:    ["row-created",  "b-created",  "ORDER CREATED"],
+      payment_captured: ["row-captured", "b-captured", "CAPTURED"],
+      payment_failed:   ["row-failed",   "b-failed",   "FAILED"],
+    };
+
+    // Cache upsell fetches keyed by product_id
+    const upsellCache = {};
+
+    function renderRow(entry) {
+      const [rowCls, badgeCls, label] = STATUS_LOOK[entry.status] || ["", "b-checked", entry.status];
+      const tr = el("tr", rowCls);
+
+      // Time
+      const tTd = el("td");
+      tTd.title = entry.timestamp;
+      tTd.textContent = new Date(entry.timestamp).toLocaleTimeString();
+      tr.append(tTd);
+
+      // Status badge
+      const sTd = el("td");
+      sTd.append(txt("span", label, "badge " + badgeCls));
+      tr.append(sTd);
+
+      // Intent
+      const iTd = el("td");
+      if (entry.intent) {
+        iTd.append(txt("span", "\u201c" + entry.intent + "\u201d", "td-intent"));
+      } else {
+        iTd.append(txt("span", "no intent stated (dry-run)", "td-muted"));
+      }
+      if (entry.product_id) iTd.append(txt("code", entry.product_id, "td-sub"));
+      tr.append(iTd);
+
+      // Amount
+      tr.append(txt("td", entry.amount == null ? "—" : rupees(entry.amount), "td-amount"));
+
+      // Mandate
+      const mTd = el("td");
+      if (entry.mandate) {
+        mTd.append(txt("code", entry.mandate.code));
+        mTd.append(txt("span", entry.mandate.reason, "td-sub"));
+      } else {
+        mTd.append(txt("span", "—", "td-muted"));
+      }
+      if (entry.detail) mTd.append(txt("span", entry.detail, "td-detail"));
+      tr.append(mTd);
+
+      // Order
+      const oTd = el("td");
+      if (entry.order_id) {
+        oTd.append(txt("code", entry.order_id));
+        if (entry.payment_id) oTd.append(txt("code", entry.payment_id, "td-sub"));
+        if (entry.status === "order_created") {
+          const a = el("a");
+          a.href = "/checkout.html?orderId=" + encodeURIComponent(entry.order_id);
+          a.textContent = "pay this order →";
+          const wrap = el("span", "td-sub");
+          wrap.append(a);
+          oTd.append(wrap);
         }
-        if (fired.size === 0) {
-          rulesEl.replaceChildren();
-          return;
-        }
-        const nodes = [el("span", "rules fired", "label")];
-        for (const [code, n] of [...fired].sort((a, b) => b[1] - a[1])) {
-          const chip = el("span", null, "chip " + (code === "approved" ? "allow" : "deny"));
-          chip.append(document.createTextNode(code + " "), el("b", "×" + n));
-          nodes.push(chip);
-        }
-        rulesEl.replaceChildren(...nodes);
+      } else {
+        oTd.append(txt("span", "no order", "td-muted"));
+      }
+      tr.append(oTd);
+
+      // For captured rows: add an upsell expansion row after
+      const rows = [tr];
+      if (entry.status === "payment_captured" && entry.product_id) {
+        rows.push(makeUpsellRow(entry));
+      }
+      return rows;
+    }
+
+    function makeUpsellRow(entry) {
+      const tr = el("tr", "upsell-row");
+      const td = el("td");
+      td.colSpan = 6;
+
+      const inner = el("div", "upsell-inner");
+      inner.append(txt("span", "Upsell →", "upsell-label"));
+
+      const pid = entry.product_id;
+      if (upsellCache[pid]) {
+        appendUpsellChips(inner, upsellCache[pid]);
+      } else {
+        const loading = txt("span", "loading suggestions…", "td-muted");
+        inner.append(loading);
+        fetch("/upsell/" + encodeURIComponent(pid))
+          .then((r) => r.json())
+          .then((data) => {
+            upsellCache[pid] = data.suggestions || [];
+            inner.removeChild(loading);
+            appendUpsellChips(inner, upsellCache[pid]);
+          })
+          .catch(() => {
+            inner.removeChild(loading);
+            inner.append(txt("span", "could not fetch suggestions", "td-muted"));
+          });
       }
 
-      function renderRow(entry) {
-        const look = LOOK[entry.status] || ["", "b-checked", entry.status];
-        const tr = el("tr", null, look[0]);
+      td.append(inner);
+      tr.append(td);
+      return tr;
+    }
 
-        const time = el("td", new Date(entry.timestamp).toLocaleTimeString());
-        time.title = entry.timestamp;
-        tr.append(time);
+    function appendUpsellChips(container, suggestions) {
+      if (suggestions.length === 0) {
+        container.append(txt("span", "no complementary products found", "td-muted"));
+        return;
+      }
+      for (const s of suggestions) {
+        const chip = el("span", "upsell-chip");
+        chip.append(txt("strong", s.name));
+        chip.append(txt("span", rupees(s.price)));
+        container.append(chip);
+      }
+    }
 
-        const status = el("td");
-        status.append(el("span", look[2], "badge " + look[1]));
-        tr.append(status);
+    // =========================================================================
+    // Load & render audit
+    // =========================================================================
+    async function loadAudit() {
+      try {
+        const orderId = new URLSearchParams(location.search).get("order_id");
+        const q = orderId ? "?order_id=" + encodeURIComponent(orderId) : "";
+        const r = await fetch("/audit" + q);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || r.status);
 
-        // A dry-run check records no intent — it was asked as a question, not
-        // acted on. Saying so beats an empty cell.
-        const intent = el("td");
-        if (entry.intent) {
-          intent.append(el("span", "“" + entry.intent + "”", "intent"));
+        renderTiles(data);
+        renderMandateBar(data);
+
+        const tbody = $("audit-rows");
+        if (data.entries.length === 0) {
+          const empty = el("tr");
+          const td = el("td", "empty-state");
+          td.colSpan = 6;
+          td.innerHTML = '<span class="emoji">🤖</span>No entries yet.<br>Ask the agent to buy something.';
+          empty.append(td);
+          tbody.replaceChildren(empty);
         } else {
-          intent.append(el("span", "no intent stated (dry-run check)", "muted"));
+          const allRows = data.entries.flatMap(renderRow);
+          tbody.replaceChildren(...allRows);
         }
-        if (entry.product_id) intent.append(el("code", entry.product_id, "reason"));
-        tr.append(intent);
 
-        tr.append(el("td", entry.amount === null ? "—" : rupees(entry.amount), "amount"));
-
-        const mandate = el("td");
-        if (entry.mandate) {
-          mandate.append(el("code", entry.mandate.code));
-          mandate.append(el("span", entry.mandate.reason, "reason"));
-        } else {
-          mandate.append(el("span", "—", "muted"));
-        }
-        // Why an entry says what it says when the mandate verdict doesn't cover
-        // it: signature_mismatch, not_captured, amount_mismatch.
-        if (entry.detail) mandate.append(el("span", entry.detail, "detail"));
-        tr.append(mandate);
-
-        const order = el("td");
-        if (entry.order_id) {
-          order.append(el("code", entry.order_id));
-          if (entry.payment_id) order.append(el("code", entry.payment_id, "reason"));
-          // An order created but never settled is still payable, and this link
-          // is how a human completes what the agent could only start.
-          if (entry.status === "order_created") {
-            const link = el("a", "pay this order →");
-            link.href = "/checkout.html?orderId=" + encodeURIComponent(entry.order_id);
-            const wrap = el("span", null, "reason");
-            wrap.append(link);
-            order.append(wrap);
-          }
-        } else {
-          // The most telling cell on the page: a blocked purchase has no order
-          // id because Razorpay was never contacted at all.
-          order.append(el("span", "no order", "muted"));
-        }
-        tr.append(order);
-
-        return tr;
+        $("err-msg").textContent = "";
+        const dot = $("status-dot");
+        dot.className = "status-dot " + ($("auto-chk").checked ? "live" : "off");
+        $("status-text").textContent = "updated " + new Date().toLocaleTimeString();
+      } catch (err) {
+        $("status-dot").className = "status-dot err";
+        $("status-text").textContent = "disconnected";
+        $("err-msg").textContent = "could not read audit log: " + err.message;
       }
+    }
 
-      async function load() {
-        try {
-          // ?order_id= narrows the view to one purchase's history — the same
-          // filter get_audit_log takes.
-          const orderId = new URLSearchParams(location.search).get("order_id");
-          const query = orderId ? "?order_id=" + encodeURIComponent(orderId) : "";
-          const res = await fetch("/audit" + query);
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || res.status);
+    // =========================================================================
+    // Study store catalog
+    // =========================================================================
+    async function loadStudyCatalog() {
+      try {
+        const r = await fetch("/catalog2");
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || r.status);
 
-          renderTiles(data);
-          renderRules(data);
-          if (data.entries.length === 0) {
-            const empty = el("td", "No entries yet. Ask the agent to buy something.", "empty");
-            empty.colSpan = 6;
-            const tr = el("tr");
-            tr.append(empty);
-            rowsEl.replaceChildren(tr);
-          } else {
-            rowsEl.replaceChildren(...data.entries.map(renderRow));
-          }
-          errorEl.textContent = "";
-          dotEl.className = "dot " + (document.getElementById("auto").checked ? "on" : "off");
-          updatedEl.textContent = "updated " + new Date().toLocaleTimeString();
-        } catch (err) {
-          dotEl.className = "dot err";
-          updatedEl.textContent = "disconnected";
-          errorEl.textContent = "could not read the audit log: " + err.message;
-        }
+        const grid = $("study-grid");
+        grid.replaceChildren(...data.products.map(renderProductCard));
+        $("study-err").textContent = "";
+      } catch (err) {
+        $("study-err").textContent = "could not load study catalog: " + err.message;
       }
+    }
 
-      document.getElementById("refresh").addEventListener("click", load);
-      // Polling, so a purchase made in a Claude Code session appears here while
-      // you watch. Nothing on this page ever writes.
-      setInterval(() => {
-        if (document.getElementById("auto").checked) load();
-      }, 3000);
-      load();
+    function renderProductCard(p) {
+      const card = el("div", "product-card");
+      card.append(txt("span", p.category, "pc-cat"));
+      card.append(txt("div", p.name, "pc-name"));
+      card.append(txt("p", p.description, "pc-desc"));
+
+      const foot = el("div", "pc-foot");
+      foot.append(txt("span", rupees(p.price), "pc-price"));
+      foot.append(txt("span", p.stock + " in stock", "pc-stock"));
+      card.append(foot);
+
+      const idEl = txt("code", p.id, "td-sub");
+      idEl.style.marginTop = "0.25rem";
+      card.append(idEl);
+
+      return card;
+    }
+
+    // =========================================================================
+    // Wire up
+    // =========================================================================
+    $("refresh-btn").addEventListener("click", loadAudit);
+    $("study-refresh-btn").addEventListener("click", loadStudyCatalog);
+
+    const AUTO_INTERVAL = 3000;
+    setInterval(() => {
+      if (currentTab === "audit" && $("auto-chk").checked) loadAudit();
+    }, AUTO_INTERVAL);
+
+    loadAudit();
     </script>
   </body>
 </html>

@@ -16,6 +16,8 @@ import {
 } from "./payments.js";
 import { formatPaise } from "./mandate.js";
 import * as audit from "./audit.js";
+import { getUpsell } from "./upsell.js";
+import { getStudyCatalog, getStudyProduct, searchStudyCatalog } from "./merchant2.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -276,6 +278,66 @@ app.post("/payment/verify", async (req, res) => {
 // second mandate here would put an id on screen that no entry refers to. Every
 // entry already carries the verdict that applied to it at the time, which is
 // the version an audit is supposed to show anyway.
+// ---------------------------------------------------------------------------
+// Upsell layer
+// ---------------------------------------------------------------------------
+//
+// After a purchase is captured the dashboard (and any caller) can fetch
+// complementary product suggestions. This is read-only — upsell logic lives
+// in upsell.js and has no side effects. The mandate filter is optional:
+// pass ?mandateFilter=1 to exclude products the active mandate would block.
+// (The mandate lives in the MCP process, so we check only per_txn_cap here
+// using the cap read from the entry; the caller's judgment applies otherwise.)
+app.get("/upsell/:productId", (req, res) => {
+  const result = getUpsell(req.params.productId);
+  if (result.purchased === null) {
+    return res.status(404).json({
+      error: "product_not_found",
+      id: req.params.productId,
+    });
+  }
+  res.json(result);
+});
+
+// ---------------------------------------------------------------------------
+// Second merchant — Campus Study & Office Essentials
+// ---------------------------------------------------------------------------
+//
+// Same mandate+audit contract as the tech store; only the catalog differs.
+// This demonstrates that Setu is a portable trust primitive, not a
+// one-merchant integration.
+app.get("/catalog2", (req, res) => {
+  res.json(getStudyCatalog());
+});
+
+app.get("/catalog2/search", (req, res) => {
+  const { q: query, category, max_price } = req.query;
+  let maxPrice = null;
+  if (max_price !== undefined) {
+    maxPrice = Number(max_price);
+    if (!Number.isInteger(maxPrice) || maxPrice <= 0) {
+      return res.status(400).json({ error: "max_price_must_be_a_positive_integer", max_price });
+    }
+  }
+  try {
+    res.json(searchStudyCatalog({ query: query ?? null, category: category ?? null, maxPrice }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get("/catalog2/product/:id", (req, res) => {
+  const product = getStudyProduct(req.params.id);
+  if (product === null) {
+    return res.status(404).json({ error: "product_not_found", id: req.params.id });
+  }
+  res.json({ currency: "INR", unit: "paise", merchant: "study", product });
+});
+
+// ---------------------------------------------------------------------------
+// Audit trail (existing)
+// ---------------------------------------------------------------------------
+
 app.get("/audit", (req, res) => {
   const { limit, order_id: orderId } = req.query;
 

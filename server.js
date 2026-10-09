@@ -14,10 +14,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { getCatalog, getProduct, searchCatalog, CURRENCY, UNIT } from "./catalog.js";
+import { getCatalog, getProduct, searchCatalog, CURRENCY, UNIT, isFlipkartMode, CATALOG_MODE } from "./catalog.js";
 import { createMandate, check, formatPaise, remainingBudget } from "./mandate.js";
 import { createOrder } from "./payments.js";
 import * as audit from "./audit.js";
+import { searchFlipkart, getFlipkartProduct, hasCredentials as fkHasCredentials } from "./flipkart.js";
+import { getUpsell } from "./upsell.js";
+import { getStudyCatalog, getStudyProduct, searchStudyCatalog } from "./merchant2.js";
+
 
 // Razorpay credentials come from .env via Node's built-in loader — no dotenv:
 //   node --env-file=.env server.js
@@ -207,7 +211,8 @@ const fail = (summary, data) => ({
   isError: true,
 });
 
-const server = new McpServer({ name: "setu", version: "0.2.0" });
+const server = new McpServer({ name: "setu", version: "0.3.0" });
+
 
 // ---------------------------------------------------------------------------
 // 1. search_catalog
@@ -217,7 +222,14 @@ server.registerTool(
   {
     title: "Search catalog",
     description:
-      "Search the merchant's product catalog. All filters are optional and combine with AND; " +
+      (isFlipkartMode
+        ? "Search Flipkart's live product catalog. " +
+          (fkHasCredentials()
+            ? "Queries the Flipkart Affiliate API in real time. "
+            : "[DEMO MODE: credentials not set — returns a representative mock of real Flipkart products.] ") +
+          "Results include real Flipkart product names, prices, and a checkout link. "
+        : "Search the merchant's product catalog. ") +
+      "All filters are optional and combine with AND; " +
       "with no arguments it returns the whole catalog, cheapest first. " +
       "IMPORTANT: max_price is an integer count of PAISE, not rupees — ₹500 is 50000. " +
       "Every price in the response is paise too; the response states its own currency and unit.",
@@ -225,7 +237,11 @@ server.registerTool(
       query: z
         .string()
         .optional()
-        .describe('Free text matched across name, description, tags and id, e.g. "phone case".'),
+        .describe(
+          isFlipkartMode
+            ? 'Keywords to search Flipkart, e.g. "wireless mouse".'
+            : 'Free text matched across name, description, tags and id, e.g. "phone case".'
+        ),
       category: z
         .string()
         .optional()
@@ -238,6 +254,15 @@ server.registerTool(
     },
   },
   async ({ query, category, max_price }) => {
+    if (isFlipkartMode) {
+      const products = await searchFlipkart({ query: query ?? null, maxPaise: max_price ?? null });
+      const filtered = category ? products.filter((p) => p.category === category) : products;
+      const sorted = [...filtered].sort((a, b) => a.price - b.price);
+      return ok(
+        `${sorted.length} Flipkart product(s) matched. Prices are in paise (INR).`,
+        { currency: CURRENCY, unit: UNIT, count: sorted.length, source: "flipkart", products: sorted },
+      );
+    }
     const result = searchCatalog({
       query: query ?? null,
       category: category ?? null,
@@ -250,6 +275,7 @@ server.registerTool(
   },
 );
 
+
 // ---------------------------------------------------------------------------
 // 2. get_product
 // ---------------------------------------------------------------------------
@@ -258,14 +284,26 @@ server.registerTool(
   {
     title: "Get product",
     description:
-      "Fetch one product by its exact catalog id. Price is an integer count of PAISE. " +
+      (isFlipkartMode
+        ? "Fetch one Flipkart product by its product id. "
+        : "Fetch one product by its exact catalog id. ") +
+      "Price is an integer count of PAISE. " +
       "Use this to confirm the price and category before calling check_mandate or initiate_purchase.",
     inputSchema: {
-      product_id: z.string().min(1).describe('Exact catalog id, e.g. "acc-case-clear".'),
+      product_id: z
+        .string()
+        .min(1)
+        .describe(
+          isFlipkartMode
+            ? 'Flipkart product id as returned by search_catalog, e.g. "MOUGS7YZMFEGCFY3".'
+            : 'Exact catalog id, e.g. "acc-case-clear".'
+        ),
     },
   },
   async ({ product_id }) => {
-    const product = getProduct(product_id);
+    const product = isFlipkartMode
+      ? await getFlipkartProduct(product_id)
+      : getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
         error: "product_not_found",
@@ -280,6 +318,7 @@ server.registerTool(
     });
   },
 );
+
 
 // ---------------------------------------------------------------------------
 // 3. check_mandate
@@ -306,7 +345,9 @@ server.registerTool(
     },
   },
   async ({ product_id, intent }) => {
-    const product = getProduct(product_id);
+    const product = isFlipkartMode
+      ? await getFlipkartProduct(product_id)
+      : getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
         error: "product_not_found",
@@ -317,11 +358,6 @@ server.registerTool(
     const mandate = currentMandate();
     const verdict = check(mandate, product.price, product.category);
 
-    // A refusal here carries the same substitutes initiate_purchase would offer.
-    // This is the path a careful agent actually takes — it previews before it
-    // commits — so a refusal that named alternatives only on the committing call
-    // would never reach the agent that most deserves it, and would leave it
-    // searching the catalog by hand for something the gate could have named.
     const alternatives = verdict.approved ? [] : suggestAlternatives(mandate, product);
 
     audit.record({
@@ -336,6 +372,7 @@ server.registerTool(
         reason: verdict.reason,
       },
       detail: verdict.approved ? null : alternativesDetail(alternatives),
+      flipkart_url: product._fk_url ?? null,
     });
 
     return ok(
@@ -348,11 +385,13 @@ server.registerTool(
         unit: UNIT,
         remaining_display: formatPaise(remainingBudget(mandate)),
         alternatives: alternativesPayload(alternatives),
+        ...(product._fk_url ? { flipkart_url: product._fk_url } : {}),
         note: "This was a check only. No order was created and no money moved.",
       },
     );
   },
 );
+
 
 // ---------------------------------------------------------------------------
 // 4. initiate_purchase
@@ -387,10 +426,15 @@ server.registerTool(
       "names up to two `alternatives` the mandate WOULD approve, closest match first (same category " +
       "as the product you asked for where one qualifies, then cheapest). To recover from a refusal, " +
       "call this tool again with one of those ids — there is no separate retry tool. " +
-      "If the mandate approves, a Razorpay order is created and a checkout URL is returned. " +
-      "This does NOT complete the payment: a human must open that URL and pay. The tool returns " +
-      "status 'awaiting_payment', never 'paid'. Call get_audit_log afterwards to see whether the " +
-      "payment was captured. The price is taken from the catalog and can never be supplied by you.",
+      (isFlipkartMode
+        ? "If the mandate approves, a Flipkart checkout URL is returned. Open it in a browser to complete " +
+          "the real purchase on Flipkart. The tool returns status 'awaiting_payment' — the agent never " +
+          "completes the payment itself. "
+        : "If the mandate approves, a Razorpay order is created and a checkout URL is returned. " +
+          "This does NOT complete the payment: a human must open that URL and pay. The tool returns " +
+          "status 'awaiting_payment', never 'paid'. Call get_audit_log afterwards to see whether the " +
+          "payment was captured. ") +
+      "The price is taken from the catalog and can never be supplied by you.",
     inputSchema: {
       product_id: z.string().min(1).describe("Exact catalog id of the product to buy."),
       intent: z
@@ -403,7 +447,9 @@ server.registerTool(
     },
   },
   async ({ product_id, intent }) => {
-    const product = getProduct(product_id);
+    const product = isFlipkartMode
+      ? await getFlipkartProduct(product_id)
+      : getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
         error: "product_not_found",
@@ -414,7 +460,7 @@ server.registerTool(
 
     const mandate = currentMandate();
 
-    // ---- THE GATE. Before Razorpay, always. --------------------------------
+    // ---- THE GATE. Before any checkout, always. ----------------------------
     const verdict = check(mandate, product.price, product.category);
     const mandateRecord = {
       mandate_id: mandate.id,
@@ -426,11 +472,6 @@ server.registerTool(
     if (!verdict.approved) {
       const alternatives = suggestAlternatives(mandate, product);
 
-      // The substitutes go in the ledger too. "Blocked, and here is what was
-      // offered instead" is the recovery story an auditor needs; without it the
-      // trail shows a refusal followed by an unexplained purchase of something
-      // else. When nothing qualifies, recording that explicitly is the point —
-      // it distinguishes "no substitute was offered" from "none existed".
       const entry = audit.record({
         status: audit.STATUS.PURCHASE_BLOCKED,
         intent,
@@ -438,14 +479,13 @@ server.registerTool(
         product_id: product.id,
         mandate: mandateRecord,
         detail: alternativesDetail(alternatives),
+        flipkart_url: product._fk_url ?? null,
       });
       console.error(
         `[setu] BLOCKED ${product.id} — ${verdict.code}; ` +
           `${alternatives.length} alternative(s) offered`,
       );
 
-      // Said in the summary line, not only in the JSON: the summary is what the
-      // agent reads first, and the substitute is the whole point of the refusal.
       return fail(`REFUSED — ${verdict.reason}${alternativesAdvice(alternatives)}`, {
         purchased: false,
         blocked_by: verdict.code,
@@ -457,7 +497,7 @@ server.registerTool(
         remaining_display: formatPaise(verdict.remaining ?? 0),
         alternatives: alternativesPayload(alternatives),
         audit_entry_id: entry.id,
-        note: "No Razorpay order was created. Nothing was charged.",
+        note: "No order was created. Nothing was charged.",
         next_step:
           alternatives.length > 0
             ? "To recover, call initiate_purchase again with one of the alternative ids above."
@@ -465,18 +505,58 @@ server.registerTool(
       });
     }
 
-    // ---- Approved: create the order ----------------------------------------
+    // ---- Approved ----------------------------------------------------------
+    if (isFlipkartMode) {
+      // In Flipkart mode there is no Razorpay order — the human completes the
+      // purchase on Flipkart's own checkout page via the affiliate deep link.
+      // The audit entry uses ORDER_CREATED to signal "approved and handed off";
+      // PAYMENT_CAPTURED would require a webhook from Flipkart which the
+      // affiliate API does not provide.
+      const entry = audit.record({
+        status: audit.STATUS.ORDER_CREATED,
+        intent,
+        amount: product.price,
+        product_id: product.id,
+        mandate: mandateRecord,
+        flipkart_url: product._fk_url ?? null,
+        detail: "flipkart_checkout: mandate approved; human must complete purchase on Flipkart",
+      });
+      console.error(
+        `[setu] APPROVED ${product.id} (Flipkart) — deep link issued`,
+      );
+
+      return ok(
+        `APPROVED — open the Flipkart checkout link to complete the real purchase. ${verdict.reason}`,
+        {
+          purchased: false,
+          status: "awaiting_payment",
+          approved_by: verdict.code,
+          reason: verdict.reason,
+          product: { id: product.id, name: product.name, category: product.category },
+          amount: product.price,
+          amount_display: formatPaise(product.price),
+          currency: CURRENCY,
+          unit: UNIT,
+          checkout_url: product._fk_url,
+          source: "flipkart",
+          audit_entry_id: entry.id,
+          next_step:
+            "Open checkout_url in a browser and complete the purchase on Flipkart. " +
+            "Call get_audit_log afterwards to review the full trail.",
+        },
+      );
+    }
+
+    // ---- Razorpay (local mode) order creation ------------------------------
     let order;
     try {
       order = await createOrder({
         amountPaise: product.price,
-        // Razorpay caps receipt at 40 characters; the provenance lives in notes.
         receipt: `setu_${Date.now()}`,
         notes: {
           product_id: product.id,
           product_name: product.name,
           mandate_id: mandate.id,
-          // Notes values are capped at 256 characters by Razorpay.
           intent: intent.slice(0, 256),
           source: "mcp:initiate_purchase",
         },
@@ -528,6 +608,7 @@ server.registerTool(
     });
   },
 );
+
 
 // ---------------------------------------------------------------------------
 // 5. get_audit_log
@@ -601,12 +682,140 @@ server.registerTool(
 );
 
 // ---------------------------------------------------------------------------
+// 6. get_upsell
+// ---------------------------------------------------------------------------
+// Complementary product suggestions AFTER a purchase is captured. This tool
+// is intentionally separate from initiate_purchase: the agent presents the
+// suggestions to the human (or surfaces them in the UI) but does NOT act on
+// them autonomously. Acting on a suggestion requires calling initiate_purchase
+// again, which will re-run the full mandate gate.
+server.registerTool(
+  "get_upsell",
+  {
+    title: "Get upsell suggestions",
+    description:
+      "After a purchase completes, returns up to 3 complementary product suggestions " +
+      "for the given product id. Suggestions are based on complementarity rules " +
+      "(e.g. a mouse → stand, cable) and sorted cheapest first. " +
+      "These are SUGGESTIONS, not approved purchases — the agent should surface them " +
+      "to the human; any actual purchase still requires a separate initiate_purchase call " +
+      "that goes through the full mandate gate. " +
+      "Use the product_id from the PAYMENT_CAPTURED audit entry.",
+    inputSchema: {
+      product_id: z
+        .string()
+        .min(1)
+        .describe("The id of the product that was just purchased."),
+    },
+  },
+  async ({ product_id }) => {
+    const result = getUpsell(product_id);
+    if (result.purchased === null) {
+      return fail(`Product "${product_id}" not found in catalog.`, { product_id });
+    }
+    if (result.suggestions.length === 0) {
+      return ok(
+        `No complementary suggestions for "${result.purchased.name}" — ` +
+        `no pairing rules match this product type.`,
+        { product_id, purchased: result.purchased, suggestions: [] },
+      );
+    }
+    const names = result.suggestions.map((p) => `${p.name} (${formatPaise(p.price)}, id ${p.id})`).join("; ");
+    return ok(
+      `Bought: ${result.purchased.name}. ` +
+      `You might also consider: ${names}. ` +
+      `To purchase any of these, call initiate_purchase — the mandate gate applies as normal.`,
+      {
+        product_id,
+        purchased: { id: result.purchased.id, name: result.purchased.name, price: result.purchased.price },
+        suggestions: result.suggestions.map((p) => ({
+          id: p.id,
+          name: p.name,
+          category: p.category,
+          price: p.price,
+          price_display: formatPaise(p.price),
+        })),
+        currency: result.currency,
+        unit: result.unit,
+        note: "Suggestions are not mandated purchases. Call initiate_purchase to act on any of these.",
+      },
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// 7. search_study_catalog  (second merchant)
+// ---------------------------------------------------------------------------
+server.registerTool(
+  "search_study_catalog",
+  {
+    title: "Search study store catalog",
+    description:
+      "Search the second merchant's catalog: Campus Study & Office Essentials. " +
+      "Same mandate and audit contract as the tech store — different products. " +
+      "This demonstrates Setu is a portable trust primitive, not a one-merchant integration. " +
+      "Prices are integer PAISE. Categories: stationery, desk, tech.",
+    inputSchema: {
+      query: z.string().optional().describe('Free text, e.g. "notebook" or "mechanical keyboard".'),
+      category: z.string().optional().describe("stationery, desk, or tech."),
+      max_price: z.int().positive().optional().describe("Upper price bound in paise."),
+    },
+  },
+  async ({ query, category, max_price }) => {
+    const result = searchStudyCatalog({
+      query: query ?? null,
+      category: category ?? null,
+      maxPrice: max_price ?? null,
+    });
+    return ok(
+      `Study store: ${result.count} product(s) match. ` +
+        (result.count === 0 ? "Try broader search terms." : "Prices in paise; use initiate_purchase to buy."),
+      result,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// 8. get_study_product  (second merchant)
+// ---------------------------------------------------------------------------
+server.registerTool(
+  "get_study_product",
+  {
+    title: "Get study store product",
+    description:
+      "Retrieve one product from the study store by id. " +
+      "Use search_study_catalog to find ids first.",
+    inputSchema: {
+      product_id: z.string().min(1).describe("Exact product id from the study store catalog."),
+    },
+  },
+  async ({ product_id }) => {
+    const product = getStudyProduct(product_id);
+    if (product === null) {
+      return fail(`Study store product "${product_id}" not found.`, { product_id });
+    }
+    return ok(
+      `${product.name} — ${formatPaise(product.price)} (${product.stock} in stock).`,
+      { currency: "INR", unit: "paise", merchant: "study", product },
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Connect
 // ---------------------------------------------------------------------------
 const transport = new StdioServerTransport();
 await server.connect(transport);
 
-console.error("[setu] MCP server ready on stdio — 5 tools registered");
+console.error("[setu] MCP server ready on stdio — 8 tools registered (tech store + study store + upsell)");
+console.error(
+  `[setu] catalog mode: ${CATALOG_MODE}` +
+    (isFlipkartMode
+      ? ` (Flipkart Affiliate API — ${
+          fkHasCredentials() ? "live, credentials loaded" : "MOCK, set FLIPKART_AFFILIATE_ID + FLIPKART_AFFILIATE_TOKEN for live"
+        })`
+      : " (local synthetic catalog)"),
+);
 console.error(
   `[setu] demo mandate ${DEMO_MANDATE.id}: ` +
     `${formatPaise(DEMO_MANDATE.max_amount)} budget, ` +
@@ -623,3 +832,4 @@ if (missingEnv.length > 0) {
 } else {
   console.error("[setu] Razorpay credentials loaded from environment");
 }
+
