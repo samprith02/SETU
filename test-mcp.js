@@ -62,12 +62,15 @@ const { tools } = await client.listTools();
 const toolNames = tools.map((t) => t.name).sort();
 console.log(`  registered: ${toolNames.join(", ")}`);
 
-expect("five tools registered", toolNames, [
+expect("eight tools registered", toolNames, [
   "check_mandate",
   "get_audit_log",
   "get_product",
+  "get_study_product",
+  "get_upsell",
   "initiate_purchase",
   "search_catalog",
+  "search_study_catalog",
 ]);
 
 // The absence is the design. An agent that can mint its own mandate has no
@@ -234,4 +237,4 @@ if (failed > 0) {
   console.log("  MCP tool surface did NOT behave as specified.\n");
   process.exit(1);
 }
-console.log("  All five tools behaved as specified.\n");
+console.log("  All tools behaved as specified.\n");

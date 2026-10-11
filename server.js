@@ -14,11 +14,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { getCatalog, getProduct, searchCatalog, CURRENCY, UNIT, isFlipkartMode, CATALOG_MODE } from "./catalog.js";
+import { getProduct, searchCatalog, CURRENCY, UNIT } from "./catalog.js";
 import { createMandate, check, formatPaise, remainingBudget } from "./mandate.js";
 import { createOrder } from "./payments.js";
 import * as audit from "./audit.js";
-import { searchFlipkart, getFlipkartProduct, hasCredentials as fkHasCredentials } from "./flipkart.js";
 import { getUpsell } from "./upsell.js";
 import { getStudyCatalog, getStudyProduct, searchStudyCatalog } from "./merchant2.js";
 
@@ -222,13 +221,7 @@ server.registerTool(
   {
     title: "Search catalog",
     description:
-      (isFlipkartMode
-        ? "Search Flipkart's live product catalog. " +
-          (fkHasCredentials()
-            ? "Queries the Flipkart Affiliate API in real time. "
-            : "[DEMO MODE: credentials not set — returns a representative mock of real Flipkart products.] ") +
-          "Results include real Flipkart product names, prices, and a checkout link. "
-        : "Search the merchant's product catalog. ") +
+      "Search the merchant's product catalog. " +
       "All filters are optional and combine with AND; " +
       "with no arguments it returns the whole catalog, cheapest first. " +
       "IMPORTANT: max_price is an integer count of PAISE, not rupees — ₹500 is 50000. " +
@@ -237,11 +230,7 @@ server.registerTool(
       query: z
         .string()
         .optional()
-        .describe(
-          isFlipkartMode
-            ? 'Keywords to search Flipkart, e.g. "wireless mouse".'
-            : 'Free text matched across name, description, tags and id, e.g. "phone case".'
-        ),
+        .describe('Free text matched across name, description, tags and id, e.g. "phone case".'),
       category: z
         .string()
         .optional()
@@ -254,15 +243,6 @@ server.registerTool(
     },
   },
   async ({ query, category, max_price }) => {
-    if (isFlipkartMode) {
-      const products = await searchFlipkart({ query: query ?? null, maxPaise: max_price ?? null });
-      const filtered = category ? products.filter((p) => p.category === category) : products;
-      const sorted = [...filtered].sort((a, b) => a.price - b.price);
-      return ok(
-        `${sorted.length} Flipkart product(s) matched. Prices are in paise (INR).`,
-        { currency: CURRENCY, unit: UNIT, count: sorted.length, source: "flipkart", products: sorted },
-      );
-    }
     const result = searchCatalog({
       query: query ?? null,
       category: category ?? null,
@@ -284,26 +264,18 @@ server.registerTool(
   {
     title: "Get product",
     description:
-      (isFlipkartMode
-        ? "Fetch one Flipkart product by its product id. "
-        : "Fetch one product by its exact catalog id. ") +
+      "Fetch one product by its exact catalog id. " +
       "Price is an integer count of PAISE. " +
       "Use this to confirm the price and category before calling check_mandate or initiate_purchase.",
     inputSchema: {
       product_id: z
         .string()
         .min(1)
-        .describe(
-          isFlipkartMode
-            ? 'Flipkart product id as returned by search_catalog, e.g. "MOUGS7YZMFEGCFY3".'
-            : 'Exact catalog id, e.g. "acc-case-clear".'
-        ),
+        .describe('Exact catalog id, e.g. "acc-case-clear".'),
     },
   },
   async ({ product_id }) => {
-    const product = isFlipkartMode
-      ? await getFlipkartProduct(product_id)
-      : getProduct(product_id);
+    const product = getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
         error: "product_not_found",
@@ -345,9 +317,7 @@ server.registerTool(
     },
   },
   async ({ product_id, intent }) => {
-    const product = isFlipkartMode
-      ? await getFlipkartProduct(product_id)
-      : getProduct(product_id);
+    const product = getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
         error: "product_not_found",
@@ -372,7 +342,6 @@ server.registerTool(
         reason: verdict.reason,
       },
       detail: verdict.approved ? null : alternativesDetail(alternatives),
-      flipkart_url: product._fk_url ?? null,
     });
 
     return ok(
@@ -385,7 +354,6 @@ server.registerTool(
         unit: UNIT,
         remaining_display: formatPaise(remainingBudget(mandate)),
         alternatives: alternativesPayload(alternatives),
-        ...(product._fk_url ? { flipkart_url: product._fk_url } : {}),
         note: "This was a check only. No order was created and no money moved.",
       },
     );
@@ -426,14 +394,10 @@ server.registerTool(
       "names up to two `alternatives` the mandate WOULD approve, closest match first (same category " +
       "as the product you asked for where one qualifies, then cheapest). To recover from a refusal, " +
       "call this tool again with one of those ids — there is no separate retry tool. " +
-      (isFlipkartMode
-        ? "If the mandate approves, a Flipkart checkout URL is returned. Open it in a browser to complete " +
-          "the real purchase on Flipkart. The tool returns status 'awaiting_payment' — the agent never " +
-          "completes the payment itself. "
-        : "If the mandate approves, a Razorpay order is created and a checkout URL is returned. " +
-          "This does NOT complete the payment: a human must open that URL and pay. The tool returns " +
-          "status 'awaiting_payment', never 'paid'. Call get_audit_log afterwards to see whether the " +
-          "payment was captured. ") +
+      "If the mandate approves, a Razorpay order is created and a checkout URL is returned. " +
+      "This does NOT complete the payment: a human must open that URL and pay. The tool returns " +
+      "status 'awaiting_payment', never 'paid'. Call get_audit_log afterwards to see whether the " +
+      "payment was captured. " +
       "The price is taken from the catalog and can never be supplied by you.",
     inputSchema: {
       product_id: z.string().min(1).describe("Exact catalog id of the product to buy."),
@@ -447,9 +411,7 @@ server.registerTool(
     },
   },
   async ({ product_id, intent }) => {
-    const product = isFlipkartMode
-      ? await getFlipkartProduct(product_id)
-      : getProduct(product_id);
+    const product = getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
         error: "product_not_found",
@@ -479,7 +441,6 @@ server.registerTool(
         product_id: product.id,
         mandate: mandateRecord,
         detail: alternativesDetail(alternatives),
-        flipkart_url: product._fk_url ?? null,
       });
       console.error(
         `[setu] BLOCKED ${product.id} — ${verdict.code}; ` +
@@ -505,49 +466,7 @@ server.registerTool(
       });
     }
 
-    // ---- Approved ----------------------------------------------------------
-    if (isFlipkartMode) {
-      // In Flipkart mode there is no Razorpay order — the human completes the
-      // purchase on Flipkart's own checkout page via the affiliate deep link.
-      // The audit entry uses ORDER_CREATED to signal "approved and handed off";
-      // PAYMENT_CAPTURED would require a webhook from Flipkart which the
-      // affiliate API does not provide.
-      const entry = audit.record({
-        status: audit.STATUS.ORDER_CREATED,
-        intent,
-        amount: product.price,
-        product_id: product.id,
-        mandate: mandateRecord,
-        flipkart_url: product._fk_url ?? null,
-        detail: "flipkart_checkout: mandate approved; human must complete purchase on Flipkart",
-      });
-      console.error(
-        `[setu] APPROVED ${product.id} (Flipkart) — deep link issued`,
-      );
-
-      return ok(
-        `APPROVED — open the Flipkart checkout link to complete the real purchase. ${verdict.reason}`,
-        {
-          purchased: false,
-          status: "awaiting_payment",
-          approved_by: verdict.code,
-          reason: verdict.reason,
-          product: { id: product.id, name: product.name, category: product.category },
-          amount: product.price,
-          amount_display: formatPaise(product.price),
-          currency: CURRENCY,
-          unit: UNIT,
-          checkout_url: product._fk_url,
-          source: "flipkart",
-          audit_entry_id: entry.id,
-          next_step:
-            "Open checkout_url in a browser and complete the purchase on Flipkart. " +
-            "Call get_audit_log afterwards to review the full trail.",
-        },
-      );
-    }
-
-    // ---- Razorpay (local mode) order creation ------------------------------
+    // ---- Approved: create the Razorpay order -------------------------------
     let order;
     try {
       order = await createOrder({
@@ -808,14 +727,6 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 console.error("[setu] MCP server ready on stdio — 8 tools registered (tech store + study store + upsell)");
-console.error(
-  `[setu] catalog mode: ${CATALOG_MODE}` +
-    (isFlipkartMode
-      ? ` (Flipkart Affiliate API — ${
-          fkHasCredentials() ? "live, credentials loaded" : "MOCK, set FLIPKART_AFFILIATE_ID + FLIPKART_AFFILIATE_TOKEN for live"
-        })`
-      : " (local synthetic catalog)"),
-);
 console.error(
   `[setu] demo mandate ${DEMO_MANDATE.id}: ` +
     `${formatPaise(DEMO_MANDATE.max_amount)} budget, ` +
