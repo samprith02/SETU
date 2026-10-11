@@ -18,7 +18,7 @@ gracefully.*
 ```
 node --env-file=.env server.js        # MCP server (stdio) — registered as `setu`
 node --env-file=.env server-http.js   # HTTP API on :3000
-npm test                              # mandate + MCP tool + recovery-flow assertions
+npm test                              # mandate + ledger + MCP tool + recovery-flow assertions
 ```
 Razorpay test-mode keys live in `.env` (gitignored, never commit, never log the
 values). Node's built-in `--env-file` does the loading — no `dotenv`. It

@@ -180,9 +180,16 @@ const afterOrder = parse(await call("get_audit_log", {}));
 console.log(`  spent after creating an order: ${formatPaise(afterOrder.mandate.spent)}`);
 console.log(`  remaining:                     ${formatPaise(afterOrder.mandate.remaining)}`);
 
-// An abandoned checkout must not permanently burn budget the user never spent.
+// An abandoned checkout must not permanently burn budget the user never spent —
+// but an unpaid order must still reserve its amount, or unpaid orders could
+// jointly overrun the budget. It is held, not spent.
 expect("creating an order spent nothing new", afterOrder.mandate.spent, baseline.spent);
-expect("budget is unchanged by an unpaid order", afterOrder.mandate.remaining, baseline.remaining);
+expect("the unpaid order holds its amount", afterOrder.mandate.held, baseline.held + 39900);
+expect(
+  "held budget is no longer available",
+  afterOrder.mandate.remaining,
+  baseline.remaining - 39900,
+);
 
 // ---------------------------------------------------------------------------
 heading("7. get_audit_log — the trail of what was decided and why");
@@ -221,7 +228,44 @@ const byOrder = parse(await call("get_audit_log", { order_id: approvedBody.order
 expect("one purchase's history is retrievable", byOrder.entries.length, 1);
 
 // ---------------------------------------------------------------------------
-heading("8. Bad input is refused, not guessed at");
+heading("8. Parallel purchases cannot jointly overrun the budget");
+// ---------------------------------------------------------------------------
+// Fired together, not one after another: each call reads the budget, awaits
+// Razorpay, then records its hold. If two interleave across that await, both
+// read the budget before either hold exists and both are approved.
+const before = parse(await call("get_audit_log", { limit: 1 })).mandate;
+const MOUSE = 44900;
+const ATTEMPTS = 6;
+const affordable = Math.floor(before.remaining / MOUSE);
+console.log(
+  `  ${formatPaise(before.remaining)} remaining; firing ${ATTEMPTS} parallel ` +
+    `${formatPaise(MOUSE)} purchases — ${affordable} can fit`,
+);
+
+const burst = await Promise.all(
+  Array.from({ length: ATTEMPTS }, (_, i) =>
+    call("initiate_purchase", {
+      product_id: "acc-mouse-wired",
+      intent: `test: parallel purchase ${i + 1} of ${ATTEMPTS}`,
+    }),
+  ),
+);
+const outcomes = burst.map(parse);
+const approvedCount = outcomes.filter((o) => o.status === "awaiting_payment").length;
+const refusedCodes = outcomes.filter((o) => o.blocked_by).map((o) => o.blocked_by);
+console.log(`  approved ${approvedCount}, refused ${refusedCodes.length} (${[...new Set(refusedCodes)].join(", ")})`);
+
+expect("exactly as many approved as the budget can hold", approvedCount, affordable);
+expect(
+  "every other attempt refused on the budget",
+  refusedCodes,
+  Array(ATTEMPTS - affordable).fill("max_amount_exceeded"),
+);
+const afterBurst = parse(await call("get_audit_log", { limit: 1 })).mandate;
+expect("held never exceeds the budget", afterBurst.spent + afterBurst.held <= afterBurst.max_amount, true);
+
+// ---------------------------------------------------------------------------
+heading("9. Bad input is refused, not guessed at");
 // ---------------------------------------------------------------------------
 const missing = await call("get_product", { product_id: "does-not-exist" });
 expect("unknown product id is an error", missing.isError, true);

@@ -179,6 +179,33 @@ expect("spent is the sum of the three approved purchases", budget.spent, 3 * cab
 expect("each purchase was under the per-transaction cap", cable.price <= budget.per_txn_cap, true);
 
 // ---------------------------------------------------------------------------
+// 6. Held budget — unpaid orders count against what remains
+// Spend is only recorded at capture. Without holds, orders awaiting payment
+// reserve nothing and could jointly overrun the budget.
+// ---------------------------------------------------------------------------
+heading("6. held — unpaid orders reserve budget");
+const holding = createMandate({
+  max_amount: 100000, // Rs 1,000
+  per_txn_cap: 50000,
+  category_allowlist: ["cables"],
+  expiry: inOneHour,
+});
+expect("a new mandate holds nothing", holding.held, 0);
+
+// Three unpaid ₹299 cable orders hold ₹897 between them; nothing is spent.
+const withHolds = { ...holding, held: 3 * cable.price };
+expect("held budget is not available", remainingBudget(withHolds), 100000 - 3 * cable.price);
+const heldVerdict = check(withHolds, cable.price, "cables");
+showVerdict(heldVerdict);
+expect("a fourth order is refused while three are held", heldVerdict.code, "max_amount_exceeded");
+expect("the refusal names the held amount", heldVerdict.reason.includes("held by orders awaiting payment"), true);
+expect(
+  "once the holds lapse the same order is approved",
+  check({ ...holding, held: 0 }, cable.price, "cables").approved,
+  true,
+);
+
+// ---------------------------------------------------------------------------
 heading("SUMMARY");
 console.log(`  ${passed} passed, ${failed} failed`);
 if (failed > 0) {

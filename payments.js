@@ -80,6 +80,15 @@ export async function fetchPayment(paymentId) {
 }
 
 /**
+ * Refund a captured payment in full. Used when money moved that the mandate can
+ * no longer stand behind — a payment completed after its approval's hold
+ * expired — so it is returned rather than silently counted or ignored.
+ */
+export async function refundPayment(paymentId, notes = {}) {
+  return getClient().payments.refund(paymentId, { notes });
+}
+
+/**
  * Verify that a checkout callback genuinely came from Razorpay.
  *
  * Razorpay signs `order_id|payment_id` with HMAC-SHA256 keyed by the account's

@@ -11,6 +11,7 @@ import {
   createOrder,
   fetchOrder,
   fetchPayment,
+  refundPayment,
   verifyPaymentSignature,
   getKeyId,
 } from "./payments.js";
@@ -91,7 +92,22 @@ app.get("/order/:id", async (req, res) => {
     const order = await fetchOrder(req.params.id);
     // If Setu's mandate gate created this order, the ledger knows what it was
     // for. A plain /checkout order has no entry, and that is fine.
-    const origin = audit.findByOrderId(order.id).find((e) => e.product_id !== null);
+    const history = audit.findByOrderId(order.id);
+    const origin = history.find((e) => e.product_id !== null);
+
+    // An approval holds budget only for so long. Once the hold has lapsed the
+    // budget may already be promised to another order, so the page stops
+    // offering to take payment rather than accepting money it would refund.
+    const created = history.find((e) => e.status === audit.STATUS.ORDER_CREATED);
+    if (created && order.status !== "paid" && audit.holdExpiresAt(created) <= new Date()) {
+      return res.status(410).json({
+        error: "approval_expired",
+        order_id: order.id,
+        hold_expired_at: audit.holdExpiresAt(created).toISOString(),
+        detail: "This approval has expired. Ask the agent to start the purchase again.",
+      });
+    }
+
     res.json({
       key_id: getKeyId(), // publishable — safe in a browser, not the secret
       order_id: order.id,
@@ -150,6 +166,7 @@ app.post("/payment/verify", async (req, res) => {
   const priorEntries = audit.findByOrderId(orderId);
   const origin = priorEntries.find((entry) => entry.status === audit.STATUS.ORDER_CREATED);
   const mandated = origin !== undefined;
+  const mandateId = origin?.mandate?.mandate_id ?? null;
 
   const recordFailure = (detail) => {
     if (!mandated) return null;
@@ -170,6 +187,28 @@ app.post("/payment/verify", async (req, res) => {
     console.error(`[setu] SIGNATURE MISMATCH for order ${orderId} — rejected`);
     recordFailure("signature_mismatch: recomputed HMAC did not match the callback signature");
     return res.status(400).json({ verified: false, error: "signature_mismatch" });
+  }
+
+  // A callback is a replayable request: same body, same valid signature. A
+  // payment already settled must not be settled again, or one purchase would
+  // be counted against the budget twice.
+  const settled = priorEntries.find(
+    (entry) => entry.status === audit.STATUS.PAYMENT_CAPTURED && entry.payment_id === paymentId,
+  );
+  if (settled) {
+    return res.json({
+      verified: true,
+      captured: true,
+      counted: true,
+      duplicate: true,
+      order_id: orderId,
+      payment_id: paymentId,
+      amount: settled.amount,
+      unit: UNIT,
+      audit_entry_id: settled.id,
+      total_spent: audit.spentUnder(mandateId),
+      note: "Already settled. This callback was not counted a second time.",
+    });
   }
 
   // 2. Did the money actually move? Ask Razorpay, not the browser.
@@ -235,6 +274,44 @@ app.post("/payment/verify", async (req, res) => {
     });
   }
 
+  // The approval held this order's amount only until its hold expired. Money
+  // that arrives later was paid against budget the mandate may since have
+  // promised elsewhere, so it is refunded instead of counted. Razorpay's own
+  // payment time decides, not when this callback happened to arrive.
+  const paidAt = new Date(payment.created_at * 1000);
+  const holdExpiry = audit.holdExpiresAt(origin);
+  if (paidAt > holdExpiry) {
+    const late =
+      `hold_expired: paid at ${paidAt.toISOString()}, but the approval only held ` +
+      `budget until ${holdExpiry.toISOString()}`;
+    let refund;
+    try {
+      refund = await refundPayment(paymentId, { reason: "setu_hold_expired", order_id: orderId });
+    } catch (error) {
+      console.error(`[setu] REFUND FAILED for late payment ${paymentId}: ${error.message}`);
+      recordFailure(`${late}; refund_failed — ${error.message}. Refund manually.`);
+      return res.status(502).json({
+        verified: true,
+        captured: true,
+        counted: false,
+        refunded: false,
+        error: "hold_expired_refund_failed",
+        detail: error.message,
+      });
+    }
+    console.error(`[setu] late payment ${paymentId} on ${orderId} refunded (${refund.id})`);
+    recordFailure(`${late}; refunded in full (${refund.id})`);
+    return res.status(409).json({
+      verified: true,
+      captured: true,
+      counted: false,
+      refunded: true,
+      refund_id: refund.id,
+      error: "approval_expired",
+      detail: "Paid after the approval expired, so the payment was refunded. Nothing was counted.",
+    });
+  }
+
   const entry = audit.record({
     status: audit.STATUS.PAYMENT_CAPTURED,
     intent: origin.intent,
@@ -247,7 +324,7 @@ app.post("/payment/verify", async (req, res) => {
 
   console.log(
     `[setu] CAPTURED ${formatPaise(payment.amount)} — ${paymentId} for order ${orderId} ` +
-      `(${origin.product_id}); counted against mandate ${origin.mandate?.mandate_id}`,
+      `(${origin.product_id}); counted against mandate ${mandateId}`,
   );
 
   res.json({
@@ -261,7 +338,7 @@ app.post("/payment/verify", async (req, res) => {
     amount_display: formatPaise(payment.amount),
     product_id: origin.product_id,
     audit_entry_id: entry.id,
-    total_spent: audit.totalCaptured(),
+    total_spent: audit.spentUnder(mandateId),
   });
 });
 

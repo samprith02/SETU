@@ -87,9 +87,33 @@ const DEMO_MANDATE = createMandate({
  * makes both processes agree by construction, and means the budget can never
  * drift from the record of what was actually bought — which is precisely the
  * discrepancy an audit trail exists to catch.
+ *
+ * Both figures are scoped to THIS mandate's id. The ledger outlives the
+ * process, and a fresh mandate is minted on every start; summing the whole
+ * ledger would hand each new mandate the spend of every one before it.
  */
 function currentMandate() {
-  return { ...DEMO_MANDATE, spent: audit.totalCaptured() };
+  return {
+    ...DEMO_MANDATE,
+    spent: audit.spentUnder(DEMO_MANDATE.id),
+    held: audit.heldUnder(DEMO_MANDATE.id),
+  };
+}
+
+/**
+ * Run purchase attempts one at a time.
+ *
+ * initiate_purchase reads the budget, awaits Razorpay, then records the order
+ * that places the hold. Two calls interleaved across that await would both read
+ * the budget before either hold existed, and both be approved. Queuing them
+ * makes check-then-hold atomic within this process — the only process that
+ * creates mandated orders.
+ */
+let purchaseQueue = Promise.resolve();
+function oneAtATime(fn) {
+  const run = purchaseQueue.then(fn, fn);
+  purchaseQueue = run.catch(() => {});
+  return run;
 }
 
 // How many entries get_audit_log returns when the caller does not say. Small
@@ -371,7 +395,8 @@ server.registerTool(
 //         purchase never reaches the payment rails at all — that is the claim
 //         the whole project rests on, and it only holds if the check comes
 //         first, in this order, in this function.
-//   DOES: on approval, a Razorpay order is created and recorded as PENDING.
+//   DOES: on approval, a Razorpay order is created and recorded as PENDING,
+//         which holds its amount against the budget for audit.HOLD_TTL_MS.
 //   DOES NOT: report success, or count spend against the budget.
 //
 // Order creation and payment capture are not the same instant. `orders.create`
@@ -383,7 +408,10 @@ server.registerTool(
 // learns the outcome.
 //
 // Counting spend here would be worse than merely inaccurate: a checkout the
-// human abandons would permanently burn budget the user never spent.
+// human abandons would permanently burn budget the user never spent. Not
+// holding anything would be worse still — unpaid orders could jointly exceed
+// the budget — so the order holds its amount until it is paid or the hold
+// expires.
 server.registerTool(
   "initiate_purchase",
   {
@@ -410,7 +438,7 @@ server.registerTool(
         ),
     },
   },
-  async ({ product_id, intent }) => {
+  async ({ product_id, intent }) => oneAtATime(async () => {
     const product = getProduct(product_id);
     if (product === null) {
       return fail(`No product with id "${product_id}".`, {
@@ -521,11 +549,13 @@ server.registerTool(
       order_id: order.id,
       checkout_url: `${BASE_URL}/checkout.html?orderId=${order.id}`,
       audit_entry_id: entry.id,
+      hold_expires_at: audit.holdExpiresAt(entry).toISOString(),
       next_step:
-        "A human must open checkout_url and complete payment. Payment capture is verified " +
-        "server-side; call get_audit_log to see the outcome. Budget is only counted once captured.",
+        "A human must open checkout_url and complete payment before hold_expires_at. Payment " +
+        "capture is verified server-side; call get_audit_log to see the outcome. Until then the " +
+        "amount is held against the budget, and counted as spent only once captured.",
     });
-  },
+  }),
 );
 
 
@@ -577,8 +607,9 @@ server.registerTool(
     return ok(
       `${entries.length} of ${all.length} audit entr(ies)` +
         (omitted > 0 ? ` (${omitted} older not shown — pass a larger limit)` : "") +
-        `. Spent ${formatPaise(mandate.spent)} of ` +
-        `${formatPaise(mandate.max_amount)}; ${formatPaise(remainingBudget(mandate))} remaining.`,
+        `. Spent ${formatPaise(mandate.spent)} of ${formatPaise(mandate.max_amount)}` +
+        (mandate.held > 0 ? `, ${formatPaise(mandate.held)} held by unpaid orders` : "") +
+        `; ${formatPaise(remainingBudget(mandate))} remaining.`,
       {
         total_entries: all.length,
         showing: entries.length,
@@ -590,6 +621,7 @@ server.registerTool(
           category_allowlist: mandate.category_allowlist,
           expiry: mandate.expiry,
           spent: mandate.spent,
+          held: mandate.held,
           remaining: remainingBudget(mandate),
           unit: UNIT,
         },
@@ -734,7 +766,7 @@ console.error(
     `categories [${DEMO_MANDATE.category_allowlist.join(", ")}], ` +
     `expires ${DEMO_MANDATE.expiry}`,
 );
-console.error(`[setu] already spent (from audit ledger): ${formatPaise(audit.totalCaptured())}`);
+console.error(`[setu] spent under this mandate: ${formatPaise(audit.spentUnder(DEMO_MANDATE.id))}`);
 if (missingEnv.length > 0) {
   console.error(
     `[setu] WARNING: ${missingEnv.join(", ")} not set — start with ` +

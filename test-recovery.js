@@ -53,28 +53,37 @@ function parse(result) {
 }
 const summaryOf = (result) => result.content[0].text.split("\n")[0];
 
-const client = new Client({ name: "setu-recovery-test", version: "0.1.0" });
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: ["--env-file=.env", "server.js"],
-  stderr: "inherit",
-});
-await client.connect(transport);
-const call = (name, args) => client.callTool({ name, arguments: args });
-
-// The mandate's own terms, read from the server rather than assumed, so this
-// file does not quietly encode a copy of them that can drift.
-const mandate = parse(await call("get_audit_log", { limit: 1 })).mandate;
-console.log(
-  `mandate ${mandate.id}: ${formatPaise(mandate.per_txn_cap)} per transaction, ` +
-    `${formatPaise(mandate.remaining)} of ${formatPaise(mandate.max_amount)} remaining, ` +
-    `categories [${mandate.category_allowlist.join(", ")}]`,
-);
+// Each run is its own agent session: a fresh server, so a fresh mandate. In one
+// shared session the runs would not be independent — every recovery order
+// holds its amount against the budget, so five ₹449 orders would hold ₹2,245
+// of a ₹2,000 budget and the fifth run would rightly be refused.
+async function connect() {
+  const client = new Client({ name: "setu-recovery-test", version: "0.1.0" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["--env-file=.env", "server.js"],
+    stderr: "inherit",
+  });
+  await client.connect(transport);
+  return client;
+}
 
 for (let run = 1; run <= RUNS; run++) {
   heading(`RUN ${run} of ${RUNS}`);
   const failures = [];
   const fail = (msg) => failures.push(msg);
+
+  const client = await connect();
+  const call = (name, args) => client.callTool({ name, arguments: args });
+
+  // The mandate's own terms, read from the server rather than assumed, so this
+  // file does not quietly encode a copy of them that can drift.
+  const mandate = parse(await call("get_audit_log", { limit: 1 })).mandate;
+  console.log(
+    `  mandate ${mandate.id}: ${formatPaise(mandate.per_txn_cap)} per transaction, ` +
+      `${formatPaise(mandate.remaining)} of ${formatPaise(mandate.max_amount)} remaining, ` +
+      `categories [${mandate.category_allowlist.join(", ")}]`,
+  );
 
   // --- 0. The preview -------------------------------------------------------
   // A careful agent asks before it commits, so check_mandate's refusal has to
@@ -230,10 +239,15 @@ for (let run = 1; run <= RUNS; run++) {
       fail("the logged recovery names the wrong product");
     }
     // Nothing is captured, so nothing is spent — an order awaiting payment must
-    // not burn budget.
+    // not burn budget. It holds its amount instead, until paid or expired.
     const after = parse(await call("get_audit_log", { limit: 1 })).mandate;
-    if (after.spent !== mandate.spent) fail("an unpaid recovery order changed the budget");
+    if (after.spent !== mandate.spent) fail("an unpaid recovery order changed spent");
+    if (after.held !== mandate.held + substitute.price) {
+      fail(`the recovery order did not hold its ${formatPaise(substitute.price)}`);
+    }
   }
+
+  await client.close();
 
   if (blockedEntry) {
     console.log(`  3. ON THE RECORD  ${blockedEntry.detail}`);
@@ -250,8 +264,6 @@ for (let run = 1; run <= RUNS; run++) {
     }
   }
 }
-
-await client.close();
 
 heading("SUMMARY");
 console.log(`\n  ${RUNS - failedRuns} of ${RUNS} runs completed the full sequence`);

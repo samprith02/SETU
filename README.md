@@ -129,7 +129,7 @@ Credentials load through Node's built-in `--env-file` flag (Node 20.6+); there i
 
 ```bash
 node --env-file=.env server-http.js    # HTTP API + checkout page on :3000
-npm test                               # mandate + MCP tool + recovery-flow assertions
+npm test                               # mandate + ledger + MCP tool + recovery-flow assertions
 ```
 
 ### Register the MCP server
@@ -180,8 +180,13 @@ Razorpay test payment (see [`CHALLENGES.md`](./CHALLENGES.md)).
 - [x] Audit ledger + explainability view
 - [x] Graceful failure: over-limit purchase blocked → substitute offered → recovery
 
-`npm test` runs all three suites — mandate, MCP tool, and recovery-flow assertions —
-20/20, 34/34, 5/5, exit 0.
+`npm test` runs all four suites — mandate, ledger, MCP tool, and recovery-flow
+assertions — 25/25, 13/13, 38/38, 5/5, exit 0.
+
+An approved order that hasn't been paid **holds** its amount against the budget
+for 15 minutes, so unpaid orders can't jointly overrun it; a payment made after
+the hold lapses is refunded rather than counted. Spend and holds are scoped to the
+mandate that approved them.
 
 ## Build log
 

@@ -32,8 +32,25 @@ import { z } from "zod";
 import { formatPaise } from "./mandate.js";
 
 // Resolved against this file, not the working directory, so both servers write
-// to the same ledger no matter where they were started from.
-const LOG_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "audit-log.jsonl");
+// to the same ledger no matter where they were started from. SETU_AUDIT_LOG
+// overrides it so tests can run against a throwaway ledger instead of the
+// demo's real one.
+const LOG_PATH =
+  process.env.SETU_AUDIT_LOG ??
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "audit-log.jsonl");
+
+/**
+ * How long an approved-but-unpaid order holds its amount against the mandate.
+ *
+ * Spend is only counted at capture, so without a hold every order awaiting
+ * payment reserves nothing — and an agent could open ten ₹449 orders against a
+ * ₹2,000 budget, each one approved because nothing had been captured yet. The
+ * hold closes that gap; the expiry keeps an abandoned checkout from burning
+ * budget forever. A payment made after its hold lapsed is refunded rather than
+ * counted (see /payment/verify), because by then the budget may have been
+ * promised to another order.
+ */
+export const HOLD_TTL_MS = 15 * 60 * 1000;
 
 /**
  * The lifecycle of one money decision. Statuses are the vocabulary the whole
@@ -190,6 +207,46 @@ export function totalCaptured() {
   return list()
     .filter((entry) => entry.status === STATUS.PAYMENT_CAPTURED)
     .reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
+}
+
+const underMandate = (entry, mandateId) => entry.mandate?.mandate_id === mandateId;
+
+/**
+ * Captured spend under ONE mandate, in paise. This, not totalCaptured(), is
+ * what a mandate's budget is measured against: every captured payment carries
+ * the mandate that approved it, and a new mandate must not inherit spend that
+ * an earlier one authorised.
+ */
+export function spentUnder(mandateId) {
+  return list()
+    .filter((e) => e.status === STATUS.PAYMENT_CAPTURED && underMandate(e, mandateId))
+    .reduce((sum, e) => sum + (e.amount ?? 0), 0);
+}
+
+/** When the hold placed by an ORDER_CREATED entry lapses. */
+export function holdExpiresAt(orderEntry) {
+  return new Date(Date.parse(orderEntry.timestamp) + HOLD_TTL_MS);
+}
+
+/**
+ * Paise held by approved orders under one mandate that are neither captured
+ * nor past their hold expiry. A PAYMENT_FAILED entry does NOT release a hold:
+ * the Razorpay order is still payable, and the human may retry it.
+ */
+export function heldUnder(mandateId, now = new Date()) {
+  const entries = list();
+  const captured = new Set(
+    entries.filter((e) => e.status === STATUS.PAYMENT_CAPTURED).map((e) => e.order_id),
+  );
+  return entries
+    .filter(
+      (e) =>
+        e.status === STATUS.ORDER_CREATED &&
+        underMandate(e, mandateId) &&
+        !captured.has(e.order_id) &&
+        holdExpiresAt(e) > now,
+    )
+    .reduce((sum, e) => sum + (e.amount ?? 0), 0);
 }
 
 /** One entry as a single human-readable line, for logs and the demo narration. */

@@ -139,9 +139,12 @@
         }
 
         if (!res.ok) {
-          document.getElementById("summary").textContent = orderId
-            ? "Could not load that order."
-            : "Failed to create order.";
+          document.getElementById("summary").textContent =
+            data.error === "approval_expired"
+              ? "This approval has expired. Ask the agent to start the purchase again."
+              : orderId
+                ? "Could not load that order."
+                : "Failed to create order.";
           log(`error: ${JSON.stringify(data)}`, "bad");
           return;
         }
@@ -211,12 +214,20 @@
               );
             }
             if (result.captured) {
-              log(
-                result.counted
-                  ? `COUNTED against the mandate. Total spent: ${rupees(result.total_spent)}`
-                  : "not counted against any mandate (ungated checkout).",
-                "ok",
-              );
+              if (result.counted) {
+                log(
+                  result.duplicate
+                    ? `already counted against the mandate. Spent under it: ${rupees(result.total_spent)}`
+                    : `COUNTED against the mandate. Spent under it: ${rupees(result.total_spent)}`,
+                  "ok",
+                );
+              } else if (result.refunded) {
+                log(`REFUNDED — ${result.detail}`, "bad");
+              } else if (result.error) {
+                log(`NOT COUNTED — ${result.error}${result.detail ? `: ${result.detail}` : ""}`, "bad");
+              } else {
+                log("not counted against any mandate (ungated checkout).", "ok");
+              }
             }
           },
           modal: { ondismiss: () => log("checkout dismissed by user") },

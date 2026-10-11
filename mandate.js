@@ -28,6 +28,10 @@ export const mandateSchema = z.object({
   expiry: z.string().datetime(),
   // Running total of approved+recorded spend, in paise.
   spent: z.int().nonnegative(),
+  // Paise reserved by approved orders that have not been paid yet. Counted
+  // against what remains so that unpaid orders cannot jointly overrun the
+  // budget; released when the order is captured or its hold expires.
+  held: z.int().nonnegative(),
   created_at: z.string().datetime(),
 });
 
@@ -65,6 +69,7 @@ export function createMandate({
     category_allowlist,
     expiry,
     spent: 0,
+    held: 0,
     created_at: new Date().toISOString(),
   });
 
@@ -87,9 +92,9 @@ export function getActiveMandate() {
   return activeMandate;
 }
 
-/** Amount still available under the total budget, in paise. */
+/** Amount still available under the total budget, in paise: neither spent nor held. */
 export function remainingBudget(mandate) {
-  return Math.max(0, mandate.max_amount - mandate.spent);
+  return Math.max(0, mandate.max_amount - mandate.spent - (mandate.held ?? 0));
 }
 
 /**
@@ -167,8 +172,9 @@ export function check(mandate, purchaseAmount, category, now = new Date()) {
     };
   }
 
-  // 4. Total budget — bounds aggregate exposure
+  // 4. Total budget — bounds aggregate exposure, including unpaid orders
   if (purchaseAmount > remaining) {
+    const held = mandate.held ?? 0;
     return {
       ...context,
       approved: false,
@@ -176,7 +182,9 @@ export function check(mandate, purchaseAmount, category, now = new Date()) {
       reason:
         `Purchase of ${formatPaise(purchaseAmount)} exceeds the ` +
         `${formatPaise(remaining)} remaining of a ${formatPaise(mandate.max_amount)} ` +
-        `budget (${formatPaise(mandate.spent)} already spent).`,
+        `budget (${formatPaise(mandate.spent)} already spent` +
+        (held > 0 ? `, ${formatPaise(held)} held by orders awaiting payment` : "") +
+        `).`,
     };
   }
 
