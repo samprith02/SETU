@@ -15,11 +15,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { getProduct, searchCatalog, CURRENCY, UNIT } from "./catalog.js";
-import { createMandate, check, formatPaise, remainingBudget } from "./mandate.js";
+import { createMandate, loadLatestMandate, check, formatPaise, remainingBudget } from "./mandate.js";
 import { createOrder } from "./payments.js";
 import * as audit from "./audit.js";
 import { getUpsell } from "./upsell.js";
 import { getStudyCatalog, getStudyProduct, searchStudyCatalog } from "./merchant2.js";
+import { getDbPath } from "./db.js";
 
 
 // Razorpay credentials come from .env via Node's built-in loader — no dotenv:
@@ -70,12 +71,24 @@ const BASE_URL = process.env.SETU_BASE_URL || "http://localhost:3000";
 //     reachable in a live demo rather than theoretical.
 //   - allowlist omits `audio`, `chargers` and `storage`, so a category refusal
 //     can be shown independently of a price refusal.
-const DEMO_MANDATE = createMandate({
-  max_amount: 200000, // ₹2,000.00 total, for the mandate's whole life
-  per_txn_cap: 50000, // ₹500.00 ceiling on any single purchase
-  category_allowlist: ["cables", "stationery", "accessories"],
-  expiry: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24h
-});
+// Resume the persisted demo mandate if it exists and has not expired;
+// otherwise seed a fresh one. Persisting it across restarts preserves the
+// spend/hold history under the same mandate id rather than orphaning prior
+// ledger entries on every restart.
+function loadOrSeedDemoMandate() {
+  const existing = loadLatestMandate();
+  if (existing && new Date(existing.expiry) > new Date()) {
+    return existing;
+  }
+  return createMandate({
+    max_amount: 200000, // ₹2,000.00 total, for the mandate's whole life
+    per_txn_cap: 50000, // ₹500.00 ceiling on any single purchase
+    category_allowlist: ["cables", "stationery", "accessories"],
+    expiry: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24h
+  });
+}
+
+const DEMO_MANDATE = loadOrSeedDemoMandate();
 
 /**
  * The mandate as it stands right now.
@@ -759,6 +772,7 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 console.error("[setu] MCP server ready on stdio — 8 tools registered (tech store + study store + upsell)");
+console.error(`[setu] database: ${getDbPath()}`);
 console.error(
   `[setu] demo mandate ${DEMO_MANDATE.id}: ` +
     `${formatPaise(DEMO_MANDATE.max_amount)} budget, ` +

@@ -13,9 +13,15 @@
 // point of the split this file verifies.
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { formatPaise } from "./mandate.js";
+
+const DB_PATH = path.join(os.tmpdir(), `setu-test-mcp-${process.pid}.db`);
+for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(DB_PATH + suffix, { force: true });
 
 let passed = 0;
 let failed = 0;
@@ -48,12 +54,15 @@ const client = new Client({ name: "setu-test", version: "0.1.0" });
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: ["--env-file=.env", "server.js"],
+  env: { ...process.env, SETU_DB_PATH: DB_PATH },
   // Inherit stderr so the server's startup banner is visible in test output.
   stderr: "inherit",
 });
 await client.connect(transport);
 
 const call = (name, args) => client.callTool({ name, arguments: args });
+
+try {
 
 // ---------------------------------------------------------------------------
 heading("1. TOOL SURFACE");
@@ -271,7 +280,12 @@ const missing = await call("get_product", { product_id: "does-not-exist" });
 expect("unknown product id is an error", missing.isError, true);
 expect("and names the failure", parse(missing).error, "product_not_found");
 
-await client.close();
+} finally {
+  await client.close();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    fs.rmSync(DB_PATH + suffix, { force: true, maxRetries: 5, retryDelay: 50 });
+  }
+}
 
 // ---------------------------------------------------------------------------
 heading("SUMMARY");

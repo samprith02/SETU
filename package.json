@@ -24,6 +24,7 @@
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^13.1.1",
     "express": "^5.2.1",
     "razorpay": "^2.9.8",
     "zod": "^4.5.4"

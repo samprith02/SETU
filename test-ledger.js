@@ -6,18 +6,19 @@
 // What a mandate's budget is measured against is derived from the ledger, so
 // these test the derivation directly: spend is scoped to the mandate that
 // authorised it, and unpaid orders hold budget until they are captured or
-// their hold expires. Runs against a throwaway ledger, never the demo's.
+// their hold expires. Runs against a throwaway SQLite DB, never the demo's.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const LEDGER = path.join(os.tmpdir(), `setu-test-ledger-${process.pid}.jsonl`);
-process.env.SETU_AUDIT_LOG = LEDGER;
-fs.rmSync(LEDGER, { force: true });
+const DB_PATH = path.join(os.tmpdir(), `setu-test-ledger-${process.pid}.db`);
+process.env.SETU_DB_PATH = DB_PATH;
+for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(DB_PATH + suffix, { force: true });
 
-// Imported after the env var is set: audit.js resolves its path at load.
+// Imported after the env var is set so db.js opens the throwaway database.
+const { getDb, closeDb } = await import("./db.js");
 const audit = await import("./audit.js");
 
 let passed = 0;
@@ -60,7 +61,32 @@ function appendAt(timestamp, fields) {
     detail: null,
     ...fields,
   });
-  fs.appendFileSync(LEDGER, JSON.stringify(entry) + "\n", "utf8");
+  getDb()
+    .prepare(
+      `INSERT INTO audit_entries
+        (id, timestamp, status, intent, amount, product_id,
+         mandate_id, mandate_approved, mandate_code, mandate_reason,
+         order_id, payment_id, detail)
+       VALUES
+        (@id, @timestamp, @status, @intent, @amount, @product_id,
+         @mandate_id, @mandate_approved, @mandate_code, @mandate_reason,
+         @order_id, @payment_id, @detail)`,
+    )
+    .run({
+      id: entry.id,
+      timestamp: entry.timestamp,
+      status: entry.status,
+      intent: entry.intent,
+      amount: entry.amount,
+      product_id: entry.product_id,
+      mandate_id: entry.mandate?.mandate_id ?? null,
+      mandate_approved: entry.mandate ? (entry.mandate.approved ? 1 : 0) : null,
+      mandate_code: entry.mandate?.code ?? null,
+      mandate_reason: entry.mandate?.reason ?? null,
+      order_id: entry.order_id,
+      payment_id: entry.payment_id,
+      detail: entry.detail,
+    });
 }
 
 const order = (mandateId, orderId, amount, at = new Date()) =>
@@ -133,8 +159,43 @@ try {
   );
   const later = new Date(now.getTime() + audit.HOLD_TTL_MS + 1);
   expect("every hold lapses once its TTL passes", audit.heldUnder("mdt_D", later), 0);
+
+  // -------------------------------------------------------------------------
+  heading("3. record() + list() + findByOrderId() round-trip through SQLite");
+  // -------------------------------------------------------------------------
+  const rec1 = audit.record({
+    status: audit.STATUS.PURCHASE_BLOCKED,
+    intent: "test blocked",
+    amount: 74900,
+    product_id: "acc-mouse-wireless",
+    mandate: {
+      mandate_id: "mdt_E",
+      approved: false,
+      code: "per_txn_cap_exceeded",
+      reason: "over cap",
+    },
+    detail: "suggested_alternatives: acc-mouse-wired",
+  });
+  const rec2 = audit.record({
+    status: audit.STATUS.ORDER_CREATED,
+    intent: "test order",
+    amount: 44900,
+    product_id: "acc-mouse-wired",
+    mandate: verdict("mdt_E"),
+    order_id: "order_rec2",
+  });
+
+  const lastTwo = audit.list({ limit: 2 });
+  expect("list({ limit: 2 }) returns 2 entries in chronological order", lastTwo.map((e) => e.id), [
+    rec1.id,
+    rec2.id,
+  ]);
+  expect("findByOrderId finds the matching order entry", audit.findByOrderId("order_rec2").length, 1);
 } finally {
-  fs.rmSync(LEDGER, { force: true });
+  closeDb();
+  for (const suffix of ["", "-wal", "-shm"]) {
+    fs.rmSync(DB_PATH + suffix, { force: true, maxRetries: 5, retryDelay: 50 });
+  }
 }
 
 // ---------------------------------------------------------------------------

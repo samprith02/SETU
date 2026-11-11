@@ -8,14 +8,25 @@
 // to explain why both spend limits exist.
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const DB_PATH = path.join(os.tmpdir(), `setu-test-mandate-${process.pid}.db`);
+process.env.SETU_DB_PATH = DB_PATH;
+for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(DB_PATH + suffix, { force: true });
+
 import {
   createMandate,
   getActiveMandate,
+  loadMandate,
+  loadLatestMandate,
   check,
   recordSpend,
   remainingBudget,
   formatPaise,
 } from "./mandate.js";
+import { closeDb } from "./db.js";
 import { getProduct } from "./catalog.js";
 
 let passed = 0;
@@ -204,6 +215,20 @@ expect(
   check({ ...holding, held: 0 }, cable.price, "cables").approved,
   true,
 );
+
+// ---------------------------------------------------------------------------
+// 7. Persistence — mandates survive reload from SQLite
+// ---------------------------------------------------------------------------
+heading("7. persistence — loadMandate / loadLatestMandate");
+const loadedById = loadMandate(holding.id);
+expect("loadMandate retrieves the persisted mandate", loadedById?.id, holding.id);
+expect("loadMandate preserves category_allowlist", loadedById?.category_allowlist, ["cables"]);
+expect("loadLatestMandate returns the most recent mandate", loadLatestMandate()?.id, holding.id);
+
+closeDb();
+for (const suffix of ["", "-wal", "-shm"]) {
+  fs.rmSync(DB_PATH + suffix, { force: true, maxRetries: 5, retryDelay: 50 });
+}
 
 // ---------------------------------------------------------------------------
 heading("SUMMARY");

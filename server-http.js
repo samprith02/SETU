@@ -15,7 +15,7 @@ import {
   verifyPaymentSignature,
   getKeyId,
 } from "./payments.js";
-import { formatPaise } from "./mandate.js";
+import { formatPaise, loadLatestMandate } from "./mandate.js";
 import * as audit from "./audit.js";
 import { getUpsell } from "./upsell.js";
 import { getStudyCatalog, getStudyProduct, searchStudyCatalog } from "./merchant2.js";
@@ -435,6 +435,14 @@ app.get("/audit", (req, res) => {
       ? audit.findByOrderId(orderId)
       : audit.list({ limit: parsedLimit });
     const captured = audit.totalCaptured();
+    const activeMandate = loadLatestMandate();
+    const mandate = activeMandate
+      ? {
+          ...activeMandate,
+          spent: audit.spentUnder(activeMandate.id),
+          held: audit.heldUnder(activeMandate.id),
+        }
+      : null;
 
     res.json({
       currency: CURRENCY,
@@ -442,6 +450,7 @@ app.get("/audit", (req, res) => {
       count: entries.length,
       total_captured: captured,
       total_captured_display: formatPaise(captured),
+      mandate,
       entries,
       timeline: entries.map(audit.formatEntry),
     });

@@ -19,6 +19,9 @@
 // Run RUNS times in a row, because a recovery path that works once is not a
 // recovery path. Creates real Razorpay TEST-MODE orders; no money moves.
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { formatPaise } from "./mandate.js";
@@ -57,11 +60,12 @@ const summaryOf = (result) => result.content[0].text.split("\n")[0];
 // shared session the runs would not be independent — every recovery order
 // holds its amount against the budget, so five ₹449 orders would hold ₹2,245
 // of a ₹2,000 budget and the fifth run would rightly be refused.
-async function connect() {
+async function connect(dbPath) {
   const client = new Client({ name: "setu-recovery-test", version: "0.1.0" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--env-file=.env", "server.js"],
+    env: { ...process.env, SETU_DB_PATH: dbPath },
     stderr: "inherit",
   });
   await client.connect(transport);
@@ -73,7 +77,12 @@ for (let run = 1; run <= RUNS; run++) {
   const failures = [];
   const fail = (msg) => failures.push(msg);
 
-  const client = await connect();
+  const dbPath = path.join(os.tmpdir(), `setu-test-recovery-${process.pid}-${run}.db`);
+  for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(dbPath + suffix, { force: true });
+
+  const client = await connect(dbPath);
+  let blockedEntry;
+  try {
   const call = (name, args) => client.callTool({ name, arguments: args });
 
   // The mandate's own terms, read from the server rather than assumed, so this
@@ -212,7 +221,7 @@ for (let run = 1; run <= RUNS; run++) {
   // --- 3. Both halves on the record ----------------------------------------
   const log = parse(await call("get_audit_log", {}));
 
-  const blockedEntry = log.entries.find((e) => e.id === blockedBody.audit_entry_id);
+  blockedEntry = log.entries.find((e) => e.id === blockedBody.audit_entry_id);
   if (blockedEntry === undefined) {
     fail("the refusal is not in the audit log");
   } else {
@@ -247,7 +256,12 @@ for (let run = 1; run <= RUNS; run++) {
     }
   }
 
-  await client.close();
+  } finally {
+    await client.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      fs.rmSync(dbPath + suffix, { force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  }
 
   if (blockedEntry) {
     console.log(`  3. ON THE RECORD  ${blockedEntry.detail}`);

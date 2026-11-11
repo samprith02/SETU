@@ -1,7 +1,7 @@
 // Setu — mandate engine
 //
 // Pure logic. No HTTP, no MCP, no Razorpay — same shape as catalog.js and
-// payments.js, so the Day 2 `check_mandate` and `initiate_purchase` tools
+// payments.js, so the `check_mandate` and `initiate_purchase` tools
 // import these functions directly instead of reimplementing the rules.
 //
 // This is the "bounded and gated" half of the track's bar. Every money action
@@ -10,8 +10,13 @@
 //
 // MONEY: integer paise throughout, matching catalog.js. Comparing budgets in
 // floating-point rupees can flip a verdict at the boundary.
+//
+// PERSISTENCE: mandates are stored in SQLite so they survive process restarts.
+// The old in-memory-only store meant a server restart created a new mandate
+// with a new id, and any spend under the old mandate was orphaned.
 
 import { z } from "zod";
+import { getDb } from "./db.js";
 
 export const mandateSchema = z.object({
   id: z.string().min(1),
@@ -47,13 +52,63 @@ export function formatPaise(paise) {
   return "₹" + RUPEE_FORMAT.format(paise / 100);
 }
 
-// In-memory store. One active mandate is all the demo needs; swapping this for
-// a table later doesn't change the rules below.
+// ---------------------------------------------------------------------------
+// Persistent mandate storage
+// ---------------------------------------------------------------------------
+//
+// Mandates are stored in SQLite. `spent` and `held` are NOT stored — they are
+// derived from the audit ledger (see server.js's currentMandate()), which is
+// the only source of truth for how much has been spent. Storing them here
+// would create two sources of truth that could drift.
+
+let _stmts = null;
+
+function stmts() {
+  if (_stmts !== null) return _stmts;
+
+  const db = getDb();
+  _stmts = {
+    upsert: db.prepare(`
+      INSERT OR REPLACE INTO mandates
+        (id, max_amount, per_txn_cap, category_allowlist, expiry, created_at)
+      VALUES
+        (@id, @max_amount, @per_txn_cap, @category_allowlist, @expiry, @created_at)
+    `),
+    findById: db.prepare(`
+      SELECT * FROM mandates WHERE id = @id
+    `),
+    findLatest: db.prepare(`
+      SELECT * FROM mandates ORDER BY rowid DESC LIMIT 1
+    `),
+    listAll: db.prepare(`
+      SELECT * FROM mandates ORDER BY rowid ASC
+    `),
+  };
+  return _stmts;
+}
+
+function mandateRowToObj(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    max_amount: row.max_amount,
+    per_txn_cap: row.per_txn_cap,
+    category_allowlist: JSON.parse(row.category_allowlist),
+    expiry: row.expiry,
+    created_at: row.created_at,
+    // spent and held are NOT from the database — they must be supplied by the
+    // caller from the audit ledger. Default to 0 here; server.js overrides.
+    spent: 0,
+    held: 0,
+  };
+}
+
+// In-memory reference to the active mandate. Kept in sync with the database.
 let activeMandate = null;
 let counter = 0;
 
 /**
- * Create a mandate and make it the active one.
+ * Create a mandate, persist it, and make it the active one.
  * Amounts are integer paise. `expiry` is an ISO 8601 timestamp.
  */
 export function createMandate({
@@ -83,7 +138,38 @@ export function createMandate({
     );
   }
 
+  // Persist to SQLite
+  stmts().upsert.run({
+    id: mandate.id,
+    max_amount: mandate.max_amount,
+    per_txn_cap: mandate.per_txn_cap,
+    category_allowlist: JSON.stringify(mandate.category_allowlist),
+    expiry: mandate.expiry,
+    created_at: mandate.created_at,
+  });
+
   activeMandate = mandate;
+  return mandate;
+}
+
+/**
+ * Load a mandate from the database by id. Returns the mandate object (without
+ * spent/held — those must be derived from the audit ledger by the caller) or
+ * null if not found.
+ */
+export function loadMandate(id) {
+  const row = stmts().findById.get({ id });
+  return mandateRowToObj(row);
+}
+
+/**
+ * Load the most recently created mandate from the database. Used at startup
+ * to resume the previous mandate instead of creating a new one every restart.
+ */
+export function loadLatestMandate() {
+  const row = stmts().findLatest.get();
+  const mandate = mandateRowToObj(row);
+  if (mandate) activeMandate = mandate;
   return mandate;
 }
 

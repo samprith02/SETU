@@ -9,35 +9,25 @@
 // records what was decided, on what basis, and what happened next. A gate with
 // no record of its verdicts is unreviewable.
 //
-// APPEND-ONLY, ON DISK. Two properties this file is built around:
+// APPEND-ONLY, IN SQLITE. Two properties this file is built around:
 //
 //   1. Entries are never mutated. A purchase that is approved and then captured
 //      produces TWO entries, not one row edited twice. An audit log you can
 //      rewrite is not an audit log, and the pending->settled transition is
 //      exactly the history worth keeping.
 //
-//   2. The ledger lives in a file, and every read re-reads it. The MCP server
-//      (server.js) and the HTTP server (server-http.js) are SEPARATE Node
-//      processes: an order is created in the first and confirmed in the second.
-//      An in-memory array would leave each blind to the other, and
-//      `get_audit_log` would report "awaiting payment" forever for a purchase
-//      that had already settled.
+//   2. The ledger lives in SQLite (WAL mode), and reads are indexed queries
+//      instead of full-file scans. The MCP server (server.js) and the HTTP
+//      server (server-http.js) are SEPARATE Node processes that can read and
+//      write concurrently without blocking each other.
+//
+// MIGRATION: existing audit-log.jsonl data can be imported with migrate-jsonl.js.
 //
 // MONEY: integer paise throughout, matching catalog.js and mandate.js.
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { formatPaise } from "./mandate.js";
-
-// Resolved against this file, not the working directory, so both servers write
-// to the same ledger no matter where they were started from. SETU_AUDIT_LOG
-// overrides it so tests can run against a throwaway ledger instead of the
-// demo's real one.
-const LOG_PATH =
-  process.env.SETU_AUDIT_LOG ??
-  path.join(path.dirname(fileURLToPath(import.meta.url)), "audit-log.jsonl");
+import { getDb } from "./db.js";
 
 /**
  * How long an approved-but-unpaid order holds its amount against the mandate.
@@ -54,7 +44,7 @@ export const HOLD_TTL_MS = 15 * 60 * 1000;
 
 /**
  * The lifecycle of one money decision. Statuses are the vocabulary the whole
- * project speaks — the MCP tools, the HTTP route and (Afternoon) the dashboard
+ * project speaks — the MCP tools, the HTTP route and the dashboard
  * all branch on these strings, so they are defined once, here.
  */
 export const STATUS = Object.freeze({
@@ -112,6 +102,127 @@ let counter = 0;
 // the file is for.
 const PROCESS_TAG = Math.random().toString(36).slice(2, 8);
 
+// ---------------------------------------------------------------------------
+// Prepared statements — created lazily on first use
+// ---------------------------------------------------------------------------
+let _stmts = null;
+
+function stmts() {
+  if (_stmts !== null) return _stmts;
+
+  const db = getDb();
+
+  _stmts = {
+    insert: db.prepare(`
+      INSERT INTO audit_entries
+        (id, timestamp, status, intent, amount, product_id,
+         mandate_id, mandate_approved, mandate_code, mandate_reason,
+         order_id, payment_id, detail)
+      VALUES
+        (@id, @timestamp, @status, @intent, @amount, @product_id,
+         @mandate_id, @mandate_approved, @mandate_code, @mandate_reason,
+         @order_id, @payment_id, @detail)
+    `),
+
+    listAll: db.prepare(`
+      SELECT * FROM audit_entries ORDER BY rowid ASC
+    `),
+
+    listLimit: db.prepare(`
+      SELECT * FROM audit_entries ORDER BY rowid DESC LIMIT @limit
+    `),
+
+    findByOrderId: db.prepare(`
+      SELECT * FROM audit_entries
+      WHERE order_id = @order_id
+      ORDER BY rowid ASC
+    `),
+
+    totalCaptured: db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) AS total
+      FROM audit_entries
+      WHERE status = 'payment_captured'
+    `),
+
+    spentUnder: db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) AS total
+      FROM audit_entries
+      WHERE status = 'payment_captured' AND mandate_id = @mandate_id
+    `),
+
+    // For heldUnder: find ORDER_CREATED entries that haven't been captured
+    // and whose hold hasn't expired. We compute the hold expiry in JS
+    // (timestamp + HOLD_TTL_MS) because date arithmetic in SQLite is awkward
+    // with ISO 8601 + millisecond offsets, and correctness matters more than
+    // the minor perf gain of doing it in SQL.
+    orderCreatedUnder: db.prepare(`
+      SELECT * FROM audit_entries
+      WHERE status = 'order_created' AND mandate_id = @mandate_id
+      ORDER BY rowid ASC
+    `),
+
+    capturedOrderIds: db.prepare(`
+      SELECT DISTINCT order_id FROM audit_entries
+      WHERE status = 'payment_captured' AND order_id IS NOT NULL
+    `),
+  };
+
+  return _stmts;
+}
+
+// ---------------------------------------------------------------------------
+// Row <-> entry conversion
+// ---------------------------------------------------------------------------
+//
+// The audit_entries table flattens the nested `mandate` object into four
+// columns. These helpers convert between the flat row and the nested shape
+// that every caller (MCP tools, HTTP routes, dashboard) expects.
+
+function rowToEntry(row) {
+  return {
+    id: row.id,
+    timestamp: row.timestamp,
+    status: row.status,
+    intent: row.intent,
+    amount: row.amount,
+    product_id: row.product_id,
+    mandate:
+      row.mandate_code !== null
+        ? {
+            mandate_id: row.mandate_id,
+            approved: row.mandate_approved === 1,
+            code: row.mandate_code,
+            reason: row.mandate_reason,
+          }
+        : null,
+    order_id: row.order_id,
+    payment_id: row.payment_id,
+    detail: row.detail,
+  };
+}
+
+function entryToRow(entry) {
+  return {
+    id: entry.id,
+    timestamp: entry.timestamp,
+    status: entry.status,
+    intent: entry.intent,
+    amount: entry.amount,
+    product_id: entry.product_id,
+    mandate_id: entry.mandate?.mandate_id ?? null,
+    mandate_approved: entry.mandate ? (entry.mandate.approved ? 1 : 0) : null,
+    mandate_code: entry.mandate?.code ?? null,
+    mandate_reason: entry.mandate?.reason ?? null,
+    order_id: entry.order_id,
+    payment_id: entry.payment_id,
+    detail: entry.detail,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public API — same exports as the old JSONL-backed audit.js
+// ---------------------------------------------------------------------------
+
 /**
  * Append one entry to the ledger. Returns the stored entry, including the
  * `id` and `timestamp` assigned here — a caller cannot backdate an entry.
@@ -144,47 +255,28 @@ export function record({
     detail,
   });
 
-  // One JSON object per line. A single sub-4KB appendFileSync is atomic enough
-  // that the two servers can write concurrently without interleaving a line,
-  // and a line-oriented file stays readable with `tail -f` during the demo.
-  fs.appendFileSync(LOG_PATH, JSON.stringify(entry) + "\n", "utf8");
+  stmts().insert.run(entryToRow(entry));
   return entry;
 }
 
 /**
  * Every entry, oldest first — the order things happened, which is the order a
- * reviewer wants to read. Re-reads the file on every call so an entry written
- * by the other process is visible immediately.
+ * reviewer wants to read.
  *
- * A malformed line throws rather than being skipped. Nothing but `record()`
- * ever writes here, so a bad line means real corruption, and an audit log that
- * quietly drops entries is worse than one that refuses to load.
+ * A limit takes the most RECENT n, then restores chronological order — same
+ * semantics as the old JSONL implementation.
  */
 export function list({ limit = null } = {}) {
-  if (!fs.existsSync(LOG_PATH)) return [];
-
-  const entries = fs
-    .readFileSync(LOG_PATH, "utf8")
-    .split("\n")
-    .map((line, index) => ({ line: line.trim(), number: index + 1 }))
-    .filter(({ line }) => line.length > 0)
-    .map(({ line, number }) => {
-      try {
-        return auditEntrySchema.parse(JSON.parse(line));
-      } catch (error) {
-        throw new Error(
-          `audit-log.jsonl line ${number} is corrupt and cannot be parsed: ${error.message}`,
-        );
-      }
-    });
-
-  // Limit takes the most RECENT n, then restores chronological order.
-  return limit === null ? entries : entries.slice(-limit);
+  if (limit !== null) {
+    // Query gets the N most recent (DESC), then we reverse to chronological
+    return stmts().listLimit.all({ limit }).reverse().map(rowToEntry);
+  }
+  return stmts().listAll.all().map(rowToEntry);
 }
 
 /** Every entry for one Razorpay order, oldest first. The history of one purchase. */
 export function findByOrderId(orderId) {
-  return list().filter((entry) => entry.order_id === orderId);
+  return stmts().findByOrderId.all({ order_id: orderId }).map(rowToEntry);
 }
 
 /**
@@ -204,12 +296,8 @@ export function findByOrderId(orderId) {
  * permanently burn budget.
  */
 export function totalCaptured() {
-  return list()
-    .filter((entry) => entry.status === STATUS.PAYMENT_CAPTURED)
-    .reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
+  return stmts().totalCaptured.get().total;
 }
-
-const underMandate = (entry, mandateId) => entry.mandate?.mandate_id === mandateId;
 
 /**
  * Captured spend under ONE mandate, in paise. This, not totalCaptured(), is
@@ -218,9 +306,7 @@ const underMandate = (entry, mandateId) => entry.mandate?.mandate_id === mandate
  * an earlier one authorised.
  */
 export function spentUnder(mandateId) {
-  return list()
-    .filter((e) => e.status === STATUS.PAYMENT_CAPTURED && underMandate(e, mandateId))
-    .reduce((sum, e) => sum + (e.amount ?? 0), 0);
+  return stmts().spentUnder.get({ mandate_id: mandateId }).total;
 }
 
 /** When the hold placed by an ORDER_CREATED entry lapses. */
@@ -234,16 +320,16 @@ export function holdExpiresAt(orderEntry) {
  * the Razorpay order is still payable, and the human may retry it.
  */
 export function heldUnder(mandateId, now = new Date()) {
-  const entries = list();
-  const captured = new Set(
-    entries.filter((e) => e.status === STATUS.PAYMENT_CAPTURED).map((e) => e.order_id),
+  const s = stmts();
+  const capturedSet = new Set(
+    s.capturedOrderIds.all().map((r) => r.order_id),
   );
-  return entries
+  const orders = s.orderCreatedUnder.all({ mandate_id: mandateId }).map(rowToEntry);
+
+  return orders
     .filter(
       (e) =>
-        e.status === STATUS.ORDER_CREATED &&
-        underMandate(e, mandateId) &&
-        !captured.has(e.order_id) &&
+        !capturedSet.has(e.order_id) &&
         holdExpiresAt(e) > now,
     )
     .reduce((sum, e) => sum + (e.amount ?? 0), 0);
