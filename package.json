@@ -4,10 +4,13 @@
   "description": "Setu — agent commerce gateway (MCP server)",
   "main": "index.js",
   "scripts": {
-    "test": "node --env-file=.env test-mandate.js && node test-ledger.js && node --env-file=.env test-mcp.js && node --env-file=.env test-recovery.js",
+    "test": "node --env-file=.env test-mandate.js && node test-ledger.js && node test-webhooks.js && node test-auth.js && node --env-file=.env test-mcp.js && node --env-file=.env test-http-mcp.js && node --env-file=.env test-recovery.js",
     "test:mandate": "node test-mandate.js",
     "test:ledger": "node test-ledger.js",
+    "test:webhooks": "node test-webhooks.js",
+    "test:auth": "node test-auth.js",
     "test:mcp": "node --env-file=.env test-mcp.js",
+    "test:http-mcp": "node --env-file=.env test-http-mcp.js",
     "test:recovery": "node --env-file=.env test-recovery.js"
   },
   "repository": {

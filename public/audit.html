@@ -638,6 +638,10 @@
           <input type="checkbox" id="auto-chk" checked />
           Auto-refresh (3 s)
         </label>
+        <span id="auth-box" style="display:none;align-items:center;gap:0.4rem;">
+          <input id="api-key-input" type="password" placeholder="Merchant API key" style="padding:0.35rem 0.6rem;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:0.78rem;" />
+          <button class="btn" id="api-key-save" type="button">Unlock</button>
+        </span>
         <span class="err-msg" id="err-msg"></span>
       </div>
 
@@ -832,6 +836,7 @@
       order_created:    ["row-created",  "b-created",  "ORDER CREATED"],
       payment_captured: ["row-captured", "b-captured", "CAPTURED"],
       payment_failed:   ["row-failed",   "b-failed",   "FAILED"],
+      payment_refunded: ["row-failed",   "b-failed",   "REFUNDED"],
     };
 
     // Cache upsell fetches keyed by product_id
@@ -860,6 +865,7 @@
         iTd.append(txt("span", "no intent stated (dry-run)", "td-muted"));
       }
       if (entry.product_id) iTd.append(txt("code", entry.product_id, "td-sub"));
+      if (entry.agent_id) iTd.append(txt("span", "agent: " + entry.agent_id, "td-sub"));
       tr.append(iTd);
 
       // Amount
@@ -954,8 +960,15 @@
       try {
         const orderId = new URLSearchParams(location.search).get("order_id");
         const q = orderId ? "?order_id=" + encodeURIComponent(orderId) : "";
-        const r = await fetch("/audit" + q);
+        const apiKey = sessionStorage.getItem("setu-api-key") || "";
+        const headers = apiKey ? { Authorization: "Bearer " + apiKey } : {};
+        const r = await fetch("/audit" + q, { headers });
         const data = await r.json();
+        if (r.status === 401) {
+          $("auth-box").style.display = "inline-flex";
+          throw new Error("API key required");
+        }
+        $("auth-box").style.display = "none";
         if (!r.ok) throw new Error(data.error || r.status);
 
         renderTiles(data);
@@ -1025,6 +1038,11 @@
     // =========================================================================
     $("refresh-btn").addEventListener("click", loadAudit);
     $("study-refresh-btn").addEventListener("click", loadStudyCatalog);
+    $("api-key-save").addEventListener("click", () => {
+      const val = $("api-key-input").value.trim();
+      if (val) sessionStorage.setItem("setu-api-key", val);
+      loadAudit();
+    });
 
     const AUTO_INTERVAL = 3000;
     setInterval(() => {

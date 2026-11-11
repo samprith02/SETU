@@ -1,30 +1,121 @@
-// Setu — HTTP API
+// Setu — Unified HTTP + MCP server
 //
 // Deliberately thin: routing, validation and status codes only. Product data
-// lives in catalog.js and Razorpay logic in payments.js, so the MCP tool
-// surface built on Day 2 imports the same functions and cannot drift from
-// what these routes do.
+// lives in catalog.js, Razorpay logic in payments.js, mandate rules in
+// mandate.js, audit persistence in audit.js, and MCP tool registration in
+// mcp.js. Both HTTP routes and MCP tools run in this single process so they
+// share one mandate, one purchase queue, and one SQLite connection.
 
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { getCatalog, getProduct, CURRENCY, UNIT } from "./catalog.js";
 import {
   createOrder,
   fetchOrder,
   fetchPayment,
-  refundPayment,
   verifyPaymentSignature,
+  verifyWebhookSignature,
   getKeyId,
 } from "./payments.js";
+import {
+  settlePayment,
+  recordOrderFailure,
+  handlePaymentFailedWebhook,
+  handleRefundWebhook,
+} from "./settlement.js";
 import { formatPaise, loadLatestMandate } from "./mandate.js";
 import * as audit from "./audit.js";
 import { getUpsell } from "./upsell.js";
 import { getStudyCatalog, getStudyProduct, searchStudyCatalog } from "./merchant2.js";
+import { createSetuMcpServer, ensureDemoMandate } from "./mcp.js";
+import { getDbPath } from "./db.js";
+import { authenticateMerchant, authenticateAgent, createRateLimiter } from "./auth.js";
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
 
-app.use(express.json());
-app.use(express.static("public"));
+export function createApp({ baseUrl, rateLimit } = {}) {
+  const app = express();
+
+  const defaultMax = Number(process.env.SETU_RATE_LIMIT_MAX) || 120;
+  const purchaseLimiter = createRateLimiter({
+    windowMs: rateLimit?.windowMs ?? 60_000,
+    max: rateLimit?.max ?? defaultMax,
+  });
+  const mcpLimiter = createRateLimiter({
+    windowMs: rateLimit?.windowMs ?? 60_000,
+    max: rateLimit?.max ?? defaultMax,
+    isJsonRpc: true,
+  });
+
+  // Razorpay webhooks sign the exact raw UTF-8 payload bytes — register this
+  // route with express.raw() BEFORE express.json() parses and discards them.
+  app.post(
+    "/webhooks/razorpay",
+    express.raw({ type: "application/json" }),
+    async (req, res) => {
+      if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
+        return res.status(503).json({ error: "webhook_secret_not_configured" });
+      }
+
+      const signature = req.headers["x-razorpay-signature"];
+      const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(String(req.body ?? ""));
+
+      if (!signature || !verifyWebhookSignature({ rawBody, signature })) {
+        console.error("[setu] WEBHOOK SIGNATURE MISMATCH — rejected");
+        return res.status(400).json({ error: "invalid_webhook_signature" });
+      }
+
+      let event;
+      try {
+        event = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        return res.status(400).json({ error: "invalid_json" });
+      }
+
+      const eventName = event?.event;
+      try {
+        if (eventName === "payment.captured") {
+          const payment = event.payload?.payment?.entity;
+          if (!payment?.id || !payment?.order_id) {
+            return res.status(400).json({ error: "missing_payment_entity" });
+          }
+          const result = await settlePayment({
+            orderId: payment.order_id,
+            payment,
+            source: "webhook",
+          });
+          // Always ack 200 to Razorpay once processed/recorded so it doesn't
+          // keep retrying terminal business rejections (e.g. hold_expired).
+          return res.status(200).json({ ok: true, event: eventName, settlement: result.body });
+        }
+
+        if (eventName === "payment.failed") {
+          const payment = event.payload?.payment?.entity;
+          const result = handlePaymentFailedWebhook(payment);
+          return res.status(200).json({ ok: true, event: eventName, ...result });
+        }
+
+        if (eventName === "refund.created" || eventName === "refund.processed") {
+          const refund = event.payload?.refund?.entity;
+          const result = handleRefundWebhook(refund);
+          return res.status(200).json({ ok: true, event: eventName, ...result });
+        }
+
+        return res.status(200).json({ ok: true, ignored: true, event: eventName ?? null });
+      } catch (error) {
+        console.error(`[setu] webhook handling failed (${eventName}): ${error.message}`);
+        return res.status(500).json({ error: "webhook_processing_failed", detail: error.message });
+      }
+    },
+  );
+
+  app.use(express.json());
+  app.use(express.static(PUBLIC_DIR));
 
 // public/ has audit.html and checkout.html but no index.html, so with no
 // route here the bare port 404s with Express's own "Cannot GET /" — which
@@ -51,7 +142,7 @@ app.get("/product/:id", (req, res) => {
 // Create a Razorpay order for one product. Price comes from the catalog, never
 // from the request body — a client that could name its own amount could buy a
 // laptop stand for one paisa.
-app.post("/checkout", async (req, res) => {
+app.post("/checkout", authenticateMerchant, purchaseLimiter, async (req, res) => {
   const { productId } = req.body ?? {};
   if (typeof productId !== "string" || productId.length === 0) {
     return res.status(400).json({ error: "productId_required" });
@@ -144,7 +235,7 @@ app.get("/order/:id", async (req, res) => {
 // Only after both does spend get counted, and it gets counted by writing a
 // PAYMENT_CAPTURED entry to the ledger — the mandate's `spent` is derived from
 // those entries, so the ledger and the budget cannot disagree.
-app.post("/payment/verify", async (req, res) => {
+app.post("/payment/verify", purchaseLimiter, async (req, res) => {
   const {
     razorpay_order_id: orderId,
     razorpay_payment_id: paymentId,
@@ -158,57 +249,15 @@ app.post("/payment/verify", async (req, res) => {
     });
   }
 
-  // Was this order created through the mandate gate? If not, it came from the
-  // deliberately ungated /checkout page, which exists only to prove the payment
-  // rails work in a browser. Those purchases are verified exactly as before but
-  // written to no ledger and counted against no budget — mixing them in would
-  // make the audit trail claim authority it never granted.
-  const priorEntries = audit.findByOrderId(orderId);
-  const origin = priorEntries.find((entry) => entry.status === audit.STATUS.ORDER_CREATED);
-  const mandated = origin !== undefined;
-  const mandateId = origin?.mandate?.mandate_id ?? null;
-
-  const recordFailure = (detail) => {
-    if (!mandated) return null;
-    return audit.record({
-      status: audit.STATUS.PAYMENT_FAILED,
-      intent: origin.intent,
-      amount: origin.amount,
-      product_id: origin.product_id,
-      mandate: origin.mandate,
-      order_id: orderId,
-      payment_id: paymentId,
-      detail,
-    });
-  };
-
   // 1. Authenticity.
   if (!verifyPaymentSignature({ orderId, paymentId, signature })) {
     console.error(`[setu] SIGNATURE MISMATCH for order ${orderId} — rejected`);
-    recordFailure("signature_mismatch: recomputed HMAC did not match the callback signature");
+    recordOrderFailure(
+      orderId,
+      paymentId,
+      "signature_mismatch: recomputed HMAC did not match the callback signature",
+    );
     return res.status(400).json({ verified: false, error: "signature_mismatch" });
-  }
-
-  // A callback is a replayable request: same body, same valid signature. A
-  // payment already settled must not be settled again, or one purchase would
-  // be counted against the budget twice.
-  const settled = priorEntries.find(
-    (entry) => entry.status === audit.STATUS.PAYMENT_CAPTURED && entry.payment_id === paymentId,
-  );
-  if (settled) {
-    return res.json({
-      verified: true,
-      captured: true,
-      counted: true,
-      duplicate: true,
-      order_id: orderId,
-      payment_id: paymentId,
-      amount: settled.amount,
-      unit: UNIT,
-      audit_entry_id: settled.id,
-      total_spent: audit.spentUnder(mandateId),
-      note: "Already settled. This callback was not counted a second time.",
-    });
   }
 
   // 2. Did the money actually move? Ask Razorpay, not the browser.
@@ -217,7 +266,11 @@ app.post("/payment/verify", async (req, res) => {
     payment = await fetchPayment(paymentId);
   } catch (error) {
     console.error(`[setu] payment fetch failed for ${paymentId}: ${error.message}`);
-    recordFailure(`payment_fetch_failed: could not reach Razorpay to confirm capture — ${error.message}`);
+    recordOrderFailure(
+      orderId,
+      paymentId,
+      `payment_fetch_failed: could not reach Razorpay to confirm capture — ${error.message}`,
+    );
     return res.status(502).json({
       verified: true,
       captured: false,
@@ -226,120 +279,8 @@ app.post("/payment/verify", async (req, res) => {
     });
   }
 
-  if (payment.status !== "captured") {
-    console.error(
-      `[setu] payment ${paymentId} is "${payment.status}", not "captured" — not counted`,
-    );
-    recordFailure(`not_captured: Razorpay reports payment status "${payment.status}", so no money moved`);
-    return res.status(402).json({
-      verified: true,
-      captured: false,
-      error: "payment_not_captured",
-      payment_status: payment.status,
-      detail:
-        "The signature is genuine but Razorpay has not captured this payment, " +
-        "so no money has moved. Nothing was counted against the mandate.",
-    });
-  }
-
-  // Razorpay's own figure is authoritative — the browser is exactly the party
-  // that would benefit from misreporting it. If it disagrees with what the
-  // mandate approved, that is the discrepancy an audit trail exists to catch,
-  // so it is recorded as a failure rather than quietly accepted.
-  if (mandated && payment.amount !== origin.amount) {
-    console.error(
-      `[setu] AMOUNT MISMATCH on ${orderId}: approved ${origin.amount}, captured ${payment.amount}`,
-    );
-    recordFailure(`amount_mismatch: mandate approved ${origin.amount} paise but ${payment.amount} paise was captured`);
-    return res.status(409).json({
-      verified: true,
-      captured: true,
-      counted: false,
-      error: "amount_mismatch",
-      approved_amount: origin.amount,
-      captured_amount: payment.amount,
-      unit: UNIT,
-    });
-  }
-
-  if (!mandated) {
-    console.log(`[setu] payment captured: ${paymentId} (ungated /checkout — not audited)`);
-    return res.json({
-      verified: true,
-      captured: true,
-      counted: false,
-      order_id: orderId,
-      payment_id: paymentId,
-      note: "Ungated browser checkout. Not recorded against any mandate.",
-    });
-  }
-
-  // The approval held this order's amount only until its hold expired. Money
-  // that arrives later was paid against budget the mandate may since have
-  // promised elsewhere, so it is refunded instead of counted. Razorpay's own
-  // payment time decides, not when this callback happened to arrive.
-  const paidAt = new Date(payment.created_at * 1000);
-  const holdExpiry = audit.holdExpiresAt(origin);
-  if (paidAt > holdExpiry) {
-    const late =
-      `hold_expired: paid at ${paidAt.toISOString()}, but the approval only held ` +
-      `budget until ${holdExpiry.toISOString()}`;
-    let refund;
-    try {
-      refund = await refundPayment(paymentId, { reason: "setu_hold_expired", order_id: orderId });
-    } catch (error) {
-      console.error(`[setu] REFUND FAILED for late payment ${paymentId}: ${error.message}`);
-      recordFailure(`${late}; refund_failed — ${error.message}. Refund manually.`);
-      return res.status(502).json({
-        verified: true,
-        captured: true,
-        counted: false,
-        refunded: false,
-        error: "hold_expired_refund_failed",
-        detail: error.message,
-      });
-    }
-    console.error(`[setu] late payment ${paymentId} on ${orderId} refunded (${refund.id})`);
-    recordFailure(`${late}; refunded in full (${refund.id})`);
-    return res.status(409).json({
-      verified: true,
-      captured: true,
-      counted: false,
-      refunded: true,
-      refund_id: refund.id,
-      error: "approval_expired",
-      detail: "Paid after the approval expired, so the payment was refunded. Nothing was counted.",
-    });
-  }
-
-  const entry = audit.record({
-    status: audit.STATUS.PAYMENT_CAPTURED,
-    intent: origin.intent,
-    amount: payment.amount,
-    product_id: origin.product_id,
-    mandate: origin.mandate,
-    order_id: orderId,
-    payment_id: paymentId,
-  });
-
-  console.log(
-    `[setu] CAPTURED ${formatPaise(payment.amount)} — ${paymentId} for order ${orderId} ` +
-      `(${origin.product_id}); counted against mandate ${mandateId}`,
-  );
-
-  res.json({
-    verified: true,
-    captured: true,
-    counted: true,
-    order_id: orderId,
-    payment_id: paymentId,
-    amount: payment.amount,
-    unit: UNIT,
-    amount_display: formatPaise(payment.amount),
-    product_id: origin.product_id,
-    audit_entry_id: entry.id,
-    total_spent: audit.spentUnder(mandateId),
-  });
+  const { statusCode, body } = await settlePayment({ orderId, payment, source: "verify" });
+  res.status(statusCode).json(body);
 });
 
 // Read the audit trail over HTTP.
@@ -415,7 +356,7 @@ app.get("/catalog2/product/:id", (req, res) => {
 // Audit trail (existing)
 // ---------------------------------------------------------------------------
 
-app.get("/audit", (req, res) => {
+app.get("/audit", authenticateMerchant, (req, res) => {
   const { limit, order_id: orderId } = req.query;
 
   if (orderId !== undefined && typeof orderId !== "string") {
@@ -463,6 +404,150 @@ app.get("/audit", (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`[setu] catalog API listening on http://localhost:${PORT}`);
-});
+  // -------------------------------------------------------------------------
+  // MCP over Streamable HTTP (/mcp)
+  // -------------------------------------------------------------------------
+  const sessions = new Map();
+
+  const jsonRpcError = (res, status, code, message) => {
+    res.status(status).json({
+      jsonrpc: "2.0",
+      error: { code, message },
+      id: null,
+    });
+  };
+
+  app.use("/mcp", authenticateAgent, mcpLimiter);
+
+  app.post("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"];
+    try {
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        const session = sessions.get(sessionId);
+        if (!session) {
+          return jsonRpcError(res, 404, -32001, "Session not found");
+        }
+        if (session.agentId !== req.auth?.clientId) {
+          return jsonRpcError(res, 403, -32001, "Forbidden: session belongs to a different agent");
+        }
+        await session.transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      if (!isInitializeRequest(req.body)) {
+        return jsonRpcError(res, 400, -32000, "Bad Request: No valid session ID provided");
+      }
+
+      const origin = baseUrl || process.env.SETU_BASE_URL || `${req.protocol}://${req.get("host")}`;
+      const agentId = req.auth?.clientId ?? null;
+      const mcpServer = createSetuMcpServer({ baseUrl: origin, defaultAgentId: agentId });
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          sessions.set(sid, { transport, server: mcpServer, agentId });
+        },
+      });
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          sessions.delete(transport.sessionId);
+        }
+      };
+
+      await mcpServer.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error(`[setu] MCP POST error: ${error.message}`);
+      if (!res.headersSent) {
+        jsonRpcError(res, 500, -32603, "Internal server error");
+      }
+    }
+  });
+
+  app.get("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"];
+    if (typeof sessionId !== "string" || sessionId.length === 0) {
+      return jsonRpcError(res, 400, -32000, "Bad Request: Missing mcp-session-id header");
+    }
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return jsonRpcError(res, 404, -32001, "Session not found");
+    }
+    if (session.agentId !== req.auth?.clientId) {
+      return jsonRpcError(res, 403, -32001, "Forbidden: session belongs to a different agent");
+    }
+    try {
+      await session.transport.handleRequest(req, res);
+    } catch (error) {
+      console.error(`[setu] MCP GET error: ${error.message}`);
+      if (!res.headersSent) {
+        jsonRpcError(res, 500, -32603, "Internal server error");
+      }
+    }
+  });
+
+  app.delete("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"];
+    if (typeof sessionId !== "string" || sessionId.length === 0) {
+      return jsonRpcError(res, 400, -32000, "Bad Request: Missing mcp-session-id header");
+    }
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return jsonRpcError(res, 404, -32001, "Session not found");
+    }
+    if (session.agentId !== req.auth?.clientId) {
+      return jsonRpcError(res, 403, -32001, "Forbidden: session belongs to a different agent");
+    }
+    try {
+      await session.transport.handleRequest(req, res);
+    } catch (error) {
+      console.error(`[setu] MCP DELETE error: ${error.message}`);
+      if (!res.headersSent) {
+        jsonRpcError(res, 500, -32603, "Internal server error");
+      }
+    }
+  });
+
+  app.locals.closeMcpSessions = async () => {
+    const active = [...sessions.values()];
+    sessions.clear();
+    await Promise.allSettled(active.map((s) => s.transport.close()));
+  };
+
+  return app;
+}
+
+const isMain =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isMain) {
+  const PORT = process.env.PORT || 3000;
+  const withStdio = process.argv.includes("--stdio");
+
+  if (withStdio) {
+    // stdout is reserved for JSON-RPC whenever stdio transport is active.
+    console.log = (...args) => console.error(...args);
+  }
+
+  const demoMandate = ensureDemoMandate();
+  const app = createApp();
+
+  app.listen(PORT, async () => {
+    console.error(`[setu] unified server listening on http://localhost:${PORT}`);
+    console.error(`[setu] MCP Streamable HTTP endpoint: http://localhost:${PORT}/mcp`);
+    console.error(`[setu] database: ${getDbPath()}`);
+    console.error(
+      `[setu] demo mandate ${demoMandate.id}: ` +
+        `${formatPaise(demoMandate.max_amount)} budget, ` +
+        `${formatPaise(demoMandate.per_txn_cap)} per-transaction cap`,
+    );
+
+    if (withStdio) {
+      const stdioServer = createSetuMcpServer({
+        baseUrl: process.env.SETU_BASE_URL || `http://localhost:${PORT}`,
+      });
+      await stdioServer.connect(new StdioServerTransport());
+      console.error("[setu] MCP stdio transport also attached in the same process");
+    }
+  });
+}

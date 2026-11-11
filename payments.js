@@ -88,6 +88,16 @@ export async function refundPayment(paymentId, notes = {}) {
   return getClient().payments.refund(paymentId, { notes });
 }
 
+function timingSafeEqualHex(expectedHex, receivedHex) {
+  const expectedBuf = Buffer.from(expectedHex, "utf8");
+  const receivedBuf = Buffer.from(String(receivedHex ?? ""), "utf8");
+
+  // timingSafeEqual throws on length mismatch, so check length first — this
+  // leaks only the length, which is fixed and public for a SHA-256 hex digest.
+  if (expectedBuf.length !== receivedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, receivedBuf);
+}
+
 /**
  * Verify that a checkout callback genuinely came from Razorpay.
  *
@@ -107,11 +117,24 @@ export function verifyPaymentSignature({ orderId, paymentId, signature }) {
     .update(`${orderId}|${paymentId}`)
     .digest("hex");
 
-  const expectedBuf = Buffer.from(expected, "utf8");
-  const receivedBuf = Buffer.from(String(signature ?? ""), "utf8");
+  return timingSafeEqualHex(expected, signature);
+}
 
-  // timingSafeEqual throws on length mismatch, so check length first — this
-  // leaks only the length, which is fixed and public for a SHA-256 hex digest.
-  if (expectedBuf.length !== receivedBuf.length) return false;
-  return crypto.timingSafeEqual(expectedBuf, receivedBuf);
+/**
+ * Verify that an incoming webhook request genuinely came from Razorpay.
+ *
+ * Razorpay signs the raw UTF-8 request body bytes with HMAC-SHA256 keyed by
+ * `RAZORPAY_WEBHOOK_SECRET` and sends the hex digest in `X-Razorpay-Signature`.
+ * Always pass the raw unparsed Buffer/string — never re-serialized JSON.
+ */
+export function verifyWebhookSignature({ rawBody, signature, secret = process.env.RAZORPAY_WEBHOOK_SECRET }) {
+  if (!secret) {
+    throw new Error("RAZORPAY_WEBHOOK_SECRET is not set.");
+  }
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("hex");
+
+  return timingSafeEqualHex(expected, signature);
 }

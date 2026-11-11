@@ -122,7 +122,25 @@ function migrate(db) {
     })();
   }
 
-  // Future migrations go here:
-  // if (version < 2) { ... db.pragma("user_version = 2"); }
+  if (version < 2) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_audit_payment_id
+          ON audit_entries(payment_id) WHERE payment_id IS NOT NULL;
+      `);
+      db.pragma("user_version = 2");
+    })();
+  }
+
+  if (version < 3) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE audit_entries ADD COLUMN agent_id TEXT;
+        CREATE INDEX IF NOT EXISTS idx_audit_agent_id
+          ON audit_entries(agent_id) WHERE agent_id IS NOT NULL;
+      `);
+      db.pragma("user_version = 3");
+    })();
+  }
 }
 

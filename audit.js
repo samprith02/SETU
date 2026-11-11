@@ -60,6 +60,8 @@ export const STATUS = Object.freeze({
   PAYMENT_CAPTURED: "payment_captured",
   // Verification or capture failed. The order stands; the money did not move.
   PAYMENT_FAILED: "payment_failed",
+  // A previously captured payment was refunded via Razorpay.
+  PAYMENT_REFUNDED: "payment_refunded",
 });
 
 export const auditEntrySchema = z.object({
@@ -86,6 +88,8 @@ export const auditEntrySchema = z.object({
     .nullable(),
   order_id: z.string().nullable(),
   payment_id: z.string().nullable(),
+  // Authenticated caller id when known (e.g. from SETU_AGENT_KEYS or stdio).
+  agent_id: z.string().nullable().default(null),
   // Why this entry says what it says, when the mandate verdict doesn't cover it.
   // A PAYMENT_FAILED entry carries the approval that was granted earlier, so
   // without this there would be nothing recording what went wrong afterwards —
@@ -117,11 +121,11 @@ function stmts() {
       INSERT INTO audit_entries
         (id, timestamp, status, intent, amount, product_id,
          mandate_id, mandate_approved, mandate_code, mandate_reason,
-         order_id, payment_id, detail)
+         order_id, payment_id, agent_id, detail)
       VALUES
         (@id, @timestamp, @status, @intent, @amount, @product_id,
          @mandate_id, @mandate_approved, @mandate_code, @mandate_reason,
-         @order_id, @payment_id, @detail)
+         @order_id, @payment_id, @agent_id, @detail)
     `),
 
     listAll: db.prepare(`
@@ -138,6 +142,12 @@ function stmts() {
       ORDER BY rowid ASC
     `),
 
+    findByPaymentId: db.prepare(`
+      SELECT * FROM audit_entries
+      WHERE payment_id = @payment_id
+      ORDER BY rowid ASC
+    `),
+
     totalCaptured: db.prepare(`
       SELECT COALESCE(SUM(amount), 0) AS total
       FROM audit_entries
@@ -145,9 +155,13 @@ function stmts() {
     `),
 
     spentUnder: db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) AS total
+      SELECT MAX(0,
+        COALESCE(SUM(CASE WHEN status = 'payment_captured' THEN amount ELSE 0 END), 0) -
+        COALESCE(SUM(CASE WHEN status = 'payment_refunded' THEN amount ELSE 0 END), 0)
+      ) AS total
       FROM audit_entries
-      WHERE status = 'payment_captured' AND mandate_id = @mandate_id
+      WHERE mandate_id = @mandate_id
+        AND status IN ('payment_captured', 'payment_refunded')
     `),
 
     // For heldUnder: find ORDER_CREATED entries that haven't been captured
@@ -197,6 +211,7 @@ function rowToEntry(row) {
         : null,
     order_id: row.order_id,
     payment_id: row.payment_id,
+    agent_id: row.agent_id ?? null,
     detail: row.detail,
   };
 }
@@ -215,6 +230,7 @@ function entryToRow(entry) {
     mandate_reason: entry.mandate?.reason ?? null,
     order_id: entry.order_id,
     payment_id: entry.payment_id,
+    agent_id: entry.agent_id ?? null,
     detail: entry.detail,
   };
 }
@@ -240,6 +256,7 @@ export function record({
   mandate = null,
   order_id = null,
   payment_id = null,
+  agent_id = null,
   detail = null,
 }) {
   const entry = auditEntrySchema.parse({
@@ -252,6 +269,7 @@ export function record({
     mandate,
     order_id,
     payment_id,
+    agent_id,
     detail,
   });
 
@@ -277,6 +295,11 @@ export function list({ limit = null } = {}) {
 /** Every entry for one Razorpay order, oldest first. The history of one purchase. */
 export function findByOrderId(orderId) {
   return stmts().findByOrderId.all({ order_id: orderId }).map(rowToEntry);
+}
+
+/** Every entry for one Razorpay payment, oldest first. */
+export function findByPaymentId(paymentId) {
+  return stmts().findByPaymentId.all({ payment_id: paymentId }).map(rowToEntry);
 }
 
 /**
